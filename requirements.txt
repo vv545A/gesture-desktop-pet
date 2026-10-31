@@ -1,0 +1,19 @@
+# 手势控制项目依赖
+# 安装：
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# 注意：mediapipe 在清华镜像上没有 wheel（会报 No matching distribution），
+# 请用官方源；嫌慢可以只给其它包加国内镜像：
+#   pip install -r requirements.txt -i https://pypi.org/simple
+
+mediapipe>=1.1.1
+opencv-contrib-python>=5.0.0.93
+numpy>=2.5.3
+pillow>=12.3.0
+
+# ---- 桌宠界面层（只有 pet/ 需要；main.py 的 HUD 版不用）----
+# PyQt6 = GPL v3。自己用没问题；要发布/商用请换 PySide6（LGPL）或买商业授权，
+# 换绑定只需要改 pet/ui/ 里的 import，其它层不依赖 Qt。
+PyQt6>=6.6

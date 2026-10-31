@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境（每人自己建，约 570MB，绝不能进仓库）
+.venv/
+venv/
+
+# 发布包
+dist/
+
+# 本机采集的手势数据（calibrate.py 生成）
+calibration/
+
+# 本机配置：摄像头序号、跟随增益因人而异，不该覆盖别人的
+pet_config.json
+
+# 开发会话记忆（与项目代码无关）
+.workbuddy/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# 调试产物
+*.log

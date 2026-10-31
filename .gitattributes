@@ -1,0 +1,11 @@
+# 统一换行符，避免以后两个人提交时整文件 diff
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF，否则某些 cmd 版本会解析出错
+*.bat text eol=crlf
+
+# 二进制文件不要做换行转换，也不要出现在 diff 里
+*.png binary
+*.task binary
+*.tflite binary
+*.zip binary
