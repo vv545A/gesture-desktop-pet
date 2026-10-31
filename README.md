@@ -2,6 +2,10 @@
 
 用双手手势操控电脑：播放/暂停、音量、切窗口、翻页、滚动。**纯 CPU 实时，不需要训练模型。**
 
+<p align="center">
+  <img src="pet_poses.png" width="660" alt="桌宠预览：正面 / 走向左 / 走向右 / 悬停进度环">
+</p>
+
 ## 两个程序，同一套手势
 
 | 程序 | 入口 | 是什么 |
@@ -13,10 +17,13 @@
 
 ```bash
 python -m pet --demo           # 没摄像头也能看：假手势 + 真动画
-python -m pet --snapshot pet.png   # 离屏渲染六种表情，改外观时用
+python -m pet --snapshot pet.png   # 离屏渲染预览图，改外观时用
 python -m pet --dry-run        # 真识别、不按键
 python -m pet                  # 正式运行（托盘里可开关/穿透/换跟随方式）
 ```
+
+> **克隆/下载后第一件事**：双击 `setup.bat`（建虚拟环境 + 装依赖）。
+> 仓库里**不含** `.venv`（约 570MB）和本机的 `pet_config.json`，这两样第一次运行会自动生成。
 
 ## 从压缩包开始（给别人用）
 
