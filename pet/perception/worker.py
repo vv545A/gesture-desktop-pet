@@ -8,6 +8,12 @@
     桌宠卡住（比如用户拖着窗口、系统弹了个大对话框）时，感知照跑，
     事件在总线里排队，界面恢复后一次性消化——不会因为界面慢而漏掉手势。
 
+暂停（2026-11 加）
+    "关闭手势识别"必须真的把摄像头**释放**掉。只把引擎置为 disabled 的话，
+    摄像头还在被占用、指示灯还亮着，用户会以为没关掉；别的程序也用不了这个
+    摄像头。所以 set_active(False) 会 release() 摄像头，恢复时重新打开。
+    模型（MediaPipe）不销毁：重新加载要 1~2 秒，而 release/重开只要几十毫秒。
+
 退出
     QThread 那套会要求所有对象在 Qt 线程里创建，MediaPipe 的模型不适合
     那样搬来搬去。这里用 threading.Thread + Event 标志，退出时 join 一下即可；
@@ -28,29 +34,45 @@ from hand_tracker import HandTracker
 from ..core.bus import EventBus
 from ..core.config import GESTURE_MODEL, HAND_MODEL, FACE_MODEL, Config
 from ..core.engine import GestureEngine
-from ..core.events import HandsSeen, PerceptionFailed, PerceptionReady, ControlToggled
+from ..core.events import (ControlToggled, HandsSeen, PerceptionFailed,
+                           PerceptionReady)
 from ..intent.router import IntentRouter
 
 
 class PerceptionWorker(threading.Thread):
     def __init__(self, cfg: Config, bus: EventBus, router: IntentRouter,
-                 engine: GestureEngine) -> None:
+                 engine: GestureEngine, control=None) -> None:
         super().__init__(daemon=True, name="perception")
         self.cfg = cfg
         self.bus = bus
         self.router = router
         self.engine = engine
+        self.control = control
         self._stop = threading.Event()
+        self._active = threading.Event()
+        self._active.set()
         self.fps = 0.0
         self.n_frames = 0
 
     # ---------------------------------------------------------------- 生命周期
     def stop(self) -> None:
         self._stop.set()
+        self._active.set()          # 别卡在暂停等待里
 
+    def set_active(self, on: bool) -> None:
+        """开/关识别。关 = 释放摄像头（指示灯灭、别的程序能用）。"""
+        if on:
+            self._active.set()
+        else:
+            self._active.clear()
+
+    @property
+    def active(self) -> bool:
+        return self._active.is_set()
+
+    # ---------------------------------------------------------------- 主流程
     def run(self) -> None:
         tracker = None
-        cap = None
         try:
             print("[perception] 加载模型…")
             t0 = time.perf_counter()
@@ -68,46 +90,77 @@ class PerceptionWorker(threading.Thread):
                 if not face_guard.enabled:
                     face_guard = None
 
-            cap = open_camera(self.cfg.cam, self.cfg.width, self.cfg.height)
-            if cap is None:
-                self.bus.post(PerceptionFailed(
-                    message=f"打不开摄像头 {self.cfg.cam}（被其它程序占用？）"))
-                return
-
-            self.bus.post(PerceptionReady(message="摄像头就绪"))
-            self._loop(cap, tracker, face_guard)
+            self._loop(tracker, face_guard)
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.bus.post(PerceptionFailed(message=f"感知线程异常：{e}"))
         finally:
-            if cap is not None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
             if tracker is not None:
                 tracker.close()
             print("[perception] 已停止")
 
     # ---------------------------------------------------------------- 主循环
-    def _loop(self, cap, tracker: HandTracker, face_guard: FaceGuard | None) -> None:
-        ts = 0
+    def _loop(self, tracker: HandTracker, face_guard) -> None:
+        cap = None
+        t0 = time.perf_counter()
         last_ui = 0.0
-        t_start = time.perf_counter()
         frames_at_last = 0
+        t_stat = t0
         slow = 0
+        first_ready = True
+        failed_shown = False
 
         while not self._stop.is_set():
+            # ---- 暂停中：把摄像头还回去，等恢复 ----
+            if not self._active.is_set():
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = None
+                    print("[perception] 已释放摄像头（手势识别关闭）")
+                last_ui = 0.0
+                time.sleep(0.1)
+                continue
+
+            # ---- 摄像头懒打开：启动、以及每次从暂停恢复 ----
+            if cap is None:
+                cap = open_camera(self.cfg.cam, self.cfg.width, self.cfg.height)
+                if cap is None:
+                    if not failed_shown:
+                        failed_shown = True
+                        self.bus.post(PerceptionFailed(
+                            message=f"打不开摄像头 {self.cfg.cam}（被其它程序占用？）"))
+                    time.sleep(1.0)          # 隔一秒重试，插上摄像头就能自己好
+                    continue
+                print("[perception] 摄像头已打开")
+                if first_ready:
+                    first_ready = False
+                    self.bus.post(PerceptionReady(message="摄像头就绪"))
+                t0 = time.perf_counter()
+                t_stat = t0
+                frames_at_last = self.n_frames
+                failed_shown = False
+
             ok, frame = cap.read()
             if not ok:
-                print("[perception] 读帧失败")
-                break
+                print("[perception] 读帧失败，重连摄像头")
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = None
+                time.sleep(0.3)
+                continue
 
             # 镜像：手往右，屏幕上的手也往右。桌宠跟随靠的就是这个坐标系，
             # 少了这一步，桌宠会往反方向跑（最典型的"手感不对"）。
             frame = cv2.flip(frame, 1)
-            ts += 33
+            # 时间戳用**真实经过的毫秒**，不是帧计数：暂停/掉帧之后帧计数会
+            # 落后于墙上时间，MediaPipe 的 VIDEO 模式对时间戳很敏感。
+            ts = int((time.perf_counter() - t0) * 1000)
 
             hands = tracker.detect(frame, ts)
             if face_guard is not None:
@@ -119,7 +172,11 @@ class PerceptionWorker(threading.Thread):
 
             # 结果 -> 事件。执行放在这里（不是界面线程），避免动画掉帧。
             if out.toggled is not None:
-                self.bus.post(ControlToggled(enabled=out.toggled))
+                if self.control is not None:
+                    # 走统一入口：同时停/开摄像头，不然手势关掉了摄像头还亮着
+                    self.control.set_enabled(out.toggled)
+                else:
+                    self.bus.post(ControlToggled(enabled=out.toggled))
             for fired in out.fired:
                 self.router.dispatch_fired(fired)
             for kind, value in out.continuous:
@@ -137,12 +194,18 @@ class PerceptionWorker(threading.Thread):
                 ))
 
             # 帧率（每 2 秒算一次，避免数字乱跳）
-            if now - t_start >= 2.0:
-                self.fps = (self.n_frames - frames_at_last) / (now - t_start)
+            if now - t_stat >= 2.0:
+                self.fps = (self.n_frames - frames_at_last) / (now - t_stat)
                 frames_at_last = self.n_frames
-                t_start = now
+                t_stat = now
                 if self.fps < 5:
                     slow += 1
                     if slow >= 3:
                         print(f"[perception] 帧率只有 {self.fps:.1f}，摄像头可能被占用")
                         slow = 0
+
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass

@@ -44,13 +44,18 @@ class Config:
     use_gesture_model: bool = True
 
     # ---------------- 判定（与 main.py 的默认值保持一致，手感才不会割裂） ----
-    hold: float = 0.5                # 悬停多久确认
+    hold: float = 0.5                # 悬停多久确认（单手窗口操作）
     cooldown: float = 0.6
     grace: float = 0.35              # 丢帧宽容
     still_speed: float = 0.6         # 掌长/秒，超过就算"手在动"
     still_gate: bool = True
-    toggle_window: float = 0.8       # 总开关每一步的最大间隔
-    zoom_step: float = 0.35          # 双手间距每变多少掌长走一格
+    # 双手（音乐）：两只手同手势要保持多久才算数。
+    # 比单手短一点 —— 双手本来就难维持，而且"两只手同一个手势"本身已经很难误触。
+    pair_hold: float = 0.4
+    pair_cooldown: float = 0.7
+    # 双手同时捏合保持多久 = 总开关（紧急停止）
+    toggle_hold: float = 1.0
+    zoom_step: float = 0.35          # 预留：双手间距每变多少掌长走一格缩放
     pinch: float = 0.45
     thumb: float = 1.12
 

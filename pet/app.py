@@ -25,6 +25,7 @@ import time
 
 from .core.bus import EventBus
 from .core.config import DEFAULT_CONFIG, Config
+from .core.control import ControlCenter
 from .core.engine import GestureEngine
 from .core.events import (ActionDone, ControlToggled, Event, GestureFired,
                           HandsSeen, PerceptionFailed, PerceptionReady, PetSay)
@@ -127,7 +128,7 @@ class DemoSource(threading.Thread):
     ③ 给朋友演示时不怕现场光线/摄像头出问题。
     """
 
-    GESTURES = ["OPEN_PALM", "THUMB_UP", "VICTORY", "POINT", "FIST"]
+    GESTURES = ["OPEN_PALM", "VICTORY", "POINT", "FIST", "THUMB_UP", "THUMB_DOWN"]
 
     def __init__(self, bus: EventBus) -> None:
         super().__init__(daemon=True, name="demo")
@@ -147,18 +148,22 @@ class DemoSource(threading.Thread):
             x = 0.5 + 0.34 * math.sin(t * 0.55)
             y = 0.5 + 0.18 * math.sin(t * 0.9 + 0.7)
             phase = t % 4.5
-            g = self.GESTURES[int(t // 4.5) % len(self.GESTURES)]
+            idx = int(t // 4.5)
+            g = self.GESTURES[idx % len(self.GESTURES)]
+            # 每四轮来一次"双手"：这样不开摄像头也能看到双手=音乐那条链路
+            two_hand = (idx % 4 == 3)
+            side = "both" if two_hand else "right"
             progress = min(1.0, max(0.0, (phase - 1.2) / 1.6))
-            gesture = g if progress > 0 else None
+            gesture = None if (two_hand or progress <= 0) else g
 
-            self.bus.post(HandsSeen(count=1, point=(x, y), gesture=gesture,
-                                    side="right", progress=progress,
+            self.bus.post(HandsSeen(count=2 if two_hand else 1, point=(x, y),
+                                    gesture=gesture, side=side, progress=progress,
                                     moving=progress <= 0, speed=0.2))
             if phase >= 2.8 and not getattr(self, "_fired_this", False):
                 self._fired_this = True
-                intent = mapping.resolve("right", g)
+                intent = mapping.resolve(side, g)
                 if intent:
-                    self.bus.post(GestureFired(gesture=g, side="right",
+                    self.bus.post(GestureFired(gesture=g, side=side,
                                                intent=intent.key, label=intent.label))
                     self.bus.post(ActionDone(intent=intent.key, label=intent.label,
                                              ok=True, detail="demo",
@@ -174,6 +179,7 @@ def _headless(cfg: Config, bus: EventBus, engine: GestureEngine,
     """控制台模式：适合在没有桌面/远程终端里验证链路是否通。"""
     from .perception.worker import PerceptionWorker
 
+    control = ControlCenter(bus, engine, cfg)
     bus.subscribe(GestureFired, lambda e: print(f"[gesture] {e.side} {e.gesture} -> {e.label}"))
     bus.subscribe(ActionDone, lambda e: print(
         f"[action ] {e.label} {'ok' if e.ok else 'FAIL ' + e.detail}"))
@@ -181,7 +187,9 @@ def _headless(cfg: Config, bus: EventBus, engine: GestureEngine,
     bus.subscribe(PerceptionFailed, lambda e: print(f"[error  ] {e.message}"))
     bus.subscribe(PerceptionReady, lambda e: print(f"[ready  ] {e.message}"))
 
-    thread = DemoSource(bus) if demo else PerceptionWorker(cfg, bus, router, engine)
+    thread = DemoSource(bus) if demo else PerceptionWorker(cfg, bus, router, engine, control)
+    if isinstance(thread, PerceptionWorker):
+        control.attach_worker(thread)
     thread.start()
     print("[run] Ctrl+C 退出")
     try:
@@ -213,10 +221,13 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
     app.setQuitOnLastWindowClosed(False)      # 关掉宠物窗口 != 退出程序
     app.setApplicationName(cfg.pet_name)
 
-    window = PetWindow(bus, cfg)
+    # 所有"开关"的唯一入口：桌宠右上角的 ×、面板、托盘、双手捏合都走它
+    control = ControlCenter(bus, engine, cfg)
+
+    window = PetWindow(bus, cfg, control)
     window.start()
 
-    worker = None if demo else PerceptionWorker(cfg, bus, router, engine)
+    worker = None if demo else PerceptionWorker(cfg, bus, router, engine, control)
     demo_src = DemoSource(bus) if demo else None
 
     def quit_all() -> None:
@@ -225,6 +236,9 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
         if demo_src is not None:
             demo_src.stop()
         app.quit()
+
+    control.attach_worker(worker)
+    control.attach_quit(quit_all)
 
     tray = PetTray(app, window, bus, engine, quit_all)   # noqa: F841  (保持引用)
     tray.show()

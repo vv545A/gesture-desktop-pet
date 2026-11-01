@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import time
 from ctypes import wintypes
@@ -50,6 +51,7 @@ VK = {
     "pageup": 0x21,
     "pagedown": 0x22,
     "0": 0x30,
+    "d": 0x44,
     "plus": 0xBB,
     "minus": 0xBD,
 }
@@ -231,6 +233,147 @@ def zoom_reset() -> str:
     finally:
         _up(VK["ctrl"])
     return "ok"
+
+
+# ------------------------------------------------------------------ 窗口操作
+# 单手手势操作的是**当前前台窗口**（Alt+Tab 切到的那个），全部走 Win32，
+# 不依赖 pywin32。每个函数返回一个很短的"结果码"，上层用它决定桌宠说哪句话
+# （见 pet/intent/mapping.py::window_bubble）——「做成了什么」比「做了什么」重要。
+#
+# 为什么不用「Win+方向键」做最大化/最小化：
+#   组合键是**盲发**的，窗口是不是已经最大化、是不是置顶，程序并不知道，
+#   于是"最大化"会变成"还原"，按一下看起来像没反应。这里直接查窗口状态
+#   (IsZoomed / WS_EX_TOPMOST) 再决定发哪个命令，同一个手势就能做成开关。
+SW_MAXIMIZE = 3
+SW_MINIMIZE = 6
+SW_RESTORE = 9
+
+GWL_EXSTYLE = -20
+WS_EX_TOPMOST = 0x00000008
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+
+user32.IsZoomed.argtypes = [wintypes.HWND]
+user32.IsZoomed.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_uint]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                            ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+# 这些不是"可以摆放的窗口"：桌面本身、任务栏、输入法候选窗
+_NOT_A_WINDOW = frozenset({
+    "Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+})
+
+
+def _own_pid() -> int:
+    return os.getpid()
+
+
+def target_window() -> int:
+    """
+    取当前该被操作的窗口；没有合适的就返回 0。
+
+    排除三类，都是实际踩过的坑：
+        桌面/任务栏 —— 最小化桌面没有意义，Win+D 才是那个动作
+        自己的窗口 —— 用户点了桌宠，前台就变成桌宠；这时做手势会把桌宠自己缩掉，
+                      看起来就像程序坏了
+    """
+    hwnd = user32.GetForegroundWindow() or 0
+    if not hwnd:
+        return 0
+    if _class_of(hwnd) in _NOT_A_WINDOW:
+        return 0
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value == _own_pid():
+        return 0
+    return int(hwnd)
+
+
+def maximize_restore() -> str:
+    """最大化 / 还原（同一个手势，看窗口当前状态决定做哪一半）。"""
+    h = target_window()
+    if not h:
+        return "no_window"
+    if user32.IsZoomed(h):
+        user32.ShowWindow(h, SW_RESTORE)
+        return "restore"
+    user32.ShowWindow(h, SW_MAXIMIZE)
+    return "max"
+
+
+def minimize() -> str:
+    h = target_window()
+    if not h:
+        return "no_window"
+    user32.ShowWindow(h, SW_MINIMIZE)
+    return "min"
+
+
+def topmost_toggle() -> str:
+    """置顶 / 取消置顶。写资料、看视频时把窗口钉在最上层很好用。"""
+    h = target_window()
+    if not h:
+        return "no_window"
+    style = user32.GetWindowLongW(h, GWL_EXSTYLE)
+    on = bool(style & WS_EX_TOPMOST)
+    user32.SetWindowPos(h, HWND_NOTOPMOST if on else HWND_TOPMOST,
+                        0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    return "untop" if on else "top"
+
+
+def snap(side: str) -> str:
+    """
+    贴边分屏（Win+←/→）。交给系统做而不是自己 SetWindowPos：
+    只有系统的 Aero Snap 处理得对多显示器、任务栏和各种 DPI。
+    """
+    if target_window() == 0:
+        return "no_window"
+    combo(VK["win"], VK["left"] if side == "left" else VK["right"])
+    return "left" if side == "left" else "right"
+
+
+def show_desktop() -> str:
+    """全部收起 / 再按一次恢复（Win+D）。是开关，不会丢东西。"""
+    combo(VK["win"], VK["d"])
+    return "desktop"
+
+
+# 名字 -> 函数。返回结果码的这套单独放，因为键名动作返回 bool、这套返回语义串。
+WINDOW_ACTIONS = {
+    "win_max": maximize_restore,
+    "win_min": minimize,
+    "win_topmost": topmost_toggle,
+    "win_snap_left": lambda: snap("left"),
+    "win_snap_right": lambda: snap("right"),
+    "win_desktop": show_desktop,
+}
+
+NO_WINDOW_HINT = "没有可以操作的窗口（先在任务栏点一下目标窗口）"
+
+
+def run_window_action(name: str) -> str:
+    """执行一个窗口动作，返回结果码；未知名字返回 "unknown"。"""
+    fn = WINDOW_ACTIONS.get(name)
+    if fn is None:
+        print(f"[warn] 未知窗口动作: {name}")
+        return "unknown"
+    try:
+        return fn() or "ok"
+    except Exception as e:
+        print(f"[error] 窗口动作 {name} 失败: {e}")
+        return "failed"
 
 
 # ------------------------------------------------------------------ 动作表

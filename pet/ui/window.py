@@ -24,7 +24,8 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QCursor, QColor, QFont, QGuiApplication, QPainter
+from PyQt6.QtGui import (QCursor, QColor, QGuiApplication, QPainter,
+                         QPen, QPolygonF)
 from PyQt6.QtWidgets import QWidget
 
 from ..core.bus import EventBus
@@ -46,10 +47,14 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 class PetWindow(QWidget):
-    def __init__(self, bus: EventBus, cfg: Config) -> None:
+    def __init__(self, bus: EventBus, cfg: Config, control=None) -> None:
         super().__init__()
         self.cfg = cfg
         self.bus = bus
+        # ControlCenter：关手势识别、退出程序这类"要动全局状态"的事都通过它
+        # 走，窗口自己不改引擎/摄像头的状态（见 core/control.py 的注释）
+        self.control = control
+        self._enabled = bool(getattr(control, "enabled", True))
         self.scale = max(0.6, min(2.0, cfg.pet_scale))
         # 有立绘就用立绘，没有就退回程序化矢量版（两套共用同一套姿态参数）
         self._sprite = SpriteSet.from_config(cfg)
@@ -66,6 +71,18 @@ class PetWindow(QWidget):
         self.win_h = int(self.body_h + 150 * self.scale)
         self.pet_cx = self.win_w / 2.0
         self.pet_cy = self.win_h - self.body_h * 0.55 - 16
+
+        # ---- 右上角的关闭键 ----
+        # 半径跟着缩放走，但夹在 9~13px：太小点不中，太大会盖住头顶的水花。
+        # 位置贴着窗口右上角 —— 和普通窗口的关闭键同一个位置，用户不用学。
+        self._btn_r = _clamp(11.0 * self.scale, 9.0, 13.0)
+        self._btn_c = QPointF(self.win_w - self._btn_r - 6, self._btn_r + 6)
+        self._hover_btn = False
+        self._panel = None                  # 弹出式控制面板（懒创建）
+        self._panel_anchor = QPointF(0, 0)  # 开面板时宠物的位置（跟随用）
+        self._press_at: Optional[QPointF] = None
+        self._press_target = ""             # "btn" / "body" / ""
+        self._drag_moved = False
 
         self._setup_window()
 
@@ -120,6 +137,8 @@ class PetWindow(QWidget):
         self.setWindowTitle(self.cfg.pet_name)
         self.resize(self.win_w, self.win_h)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        # 鼠标跟踪：不按键也要收到 mouseMoveEvent，关闭键才能做悬停高亮
+        self.setMouseTracking(True)
 
     def start(self) -> None:
         self.show()
@@ -215,13 +234,16 @@ class PetWindow(QWidget):
 
     def _on_toggle(self, ev: Event) -> None:
         assert isinstance(ev, ControlToggled)
+        self._enabled = ev.enabled
         if ev.enabled:
             self.say("我回来啦～", "happy")
             self._set_mood("happy", hold=1.2)
         else:
-            self.say("先歇一会儿…", "sleepy")
+            self.say("手势识别关啦，点右上角 ▶ 再开", "sleepy")
             self._set_mood("sleepy", hold=999)
         self._aura = 0.0
+        if self._panel is not None and self._panel.isVisible():
+            self._panel.update()
 
     def _on_say(self, ev: Event) -> None:
         assert isinstance(ev, PetSay)
@@ -324,6 +346,13 @@ class PetWindow(QWidget):
         if now > self._mood_until and self._mood not in ("idle", "sleepy"):
             self._set_mood("idle", 0.5)
 
+        # 3b) 面板跟着宠物走：跟手模式下宠物会一直移动，面板要是钉在原地，
+        #     几秒后就和宠物隔了半个屏幕，看着像两个不相关的东西。
+        if self._panel is not None and self._panel.isVisible():
+            if (self._pos - self._panel_anchor).manhattanLength() > 40:
+                self._panel.popup_near(self)
+                self._panel_anchor = QPointF(self._pos)
+
         # 4) 呼吸与晃动：一直存在的微小运动，静止时也不像一张贴图
         target = PetPose.for_mood(self._mood)
         target.squash += 0.030 * math.sin(now * 2.1)
@@ -386,36 +415,159 @@ class PetWindow(QWidget):
             rect = QRectF(8, top, self.win_w - 16, 66)
             draw_bubble(p, rect, self._bubble, self._bubble_alpha, self._font)
 
-        # 关闭状态下画一条淡淡的"待机"提示，免得用户以为程序挂了
-        if self._mood == "sleepy":
+        # 关闭状态下画一条淡淡的提示，免得用户以为程序挂了。
+        # 两种"不在干活"要区分开：手势被关掉（要告诉用户怎么开回来）和
+        # 只是暂时没看到手（待机中）。
+        if not self._enabled:
+            p.setPen(QColor(150, 160, 175, 190))
+            p.setFont(ui_font(8))
+            p.drawText(QRectF(0, self.win_h - 18, self.win_w, 16),
+                       int(Qt.AlignmentFlag.AlignHCenter), "手势识别已关闭")
+        elif self._mood == "sleepy":
             p.setPen(QColor(120, 140, 150, 150))
             p.setFont(ui_font(8))
             p.drawText(QRectF(0, self.win_h - 18, self.win_w, 16),
                        int(Qt.AlignmentFlag.AlignHCenter), "待机中")
+
+        # 右上角的关闭键要画在最上层：气泡/水花都不该盖住它
+        self._paint_power_button(p)
         p.end()
+
+    def _paint_power_button(self, p: QPainter) -> None:
+        """
+        右上角那颗按钮：运行中是 ×（点一下关手势识别），已关闭是 ▶（点一下开）。
+
+        为什么不直接做成"退出程序"：闭摄像头和退程序是两件事。用户想暂时
+        不看摄像头时不该被迫连桌宠一起关掉；真要退出，控制面板和托盘里都有。
+        """
+        c, r = self._btn_c, self._btn_r
+        hover = self._hover_btn
+        p.setPen(Qt.PenStyle.NoPen)
+        if self._enabled:
+            p.setBrush(QColor(30, 38, 58, 205 if hover else 135))
+        else:
+            p.setBrush(QColor(58, 168, 120, 235 if hover else 190))
+        p.drawEllipse(c, r, r)
+
+        if hover:   # 悬停加一圈淡光：让"这里能点"一眼看出来
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 80), 2.0))
+            p.drawEllipse(c, r + 1.2, r + 1.2)
+
+        if self._enabled:
+            p.setPen(QPen(QColor(255, 255, 255, 245 if hover else 200),
+                          1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            d = r * 0.42
+            p.drawLine(QPointF(c.x() - d, c.y() - d), QPointF(c.x() + d, c.y() + d))
+            p.drawLine(QPointF(c.x() + d, c.y() - d), QPointF(c.x() - d, c.y() + d))
+        else:
+            d = r * 0.40
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 235))
+            p.drawPolygon(QPolygonF([
+                QPointF(c.x() - d * 0.62, c.y() - d),
+                QPointF(c.x() - d * 0.62, c.y() + d),
+                QPointF(c.x() + d, c.y()),
+            ]))
+
+    # ---------------------------------------------------------------- 命中区
+    def _in_button(self, pos) -> bool:
+        c = self._btn_c
+        return math.hypot(pos.x() - c.x(), pos.y() - c.y()) <= self._btn_r + 3
+
+    def _in_body(self, pos) -> bool:
+        """
+        只有"宠物身上"才算点击/拖拽。
+
+        窗口是 1.95 倍身宽的透明方框，如果整块都响应鼠标，用户点它旁边的
+        桌面空白也会被吞掉（还会顺手把宠物拖走）——那种"点哪儿都被吃"的
+        手感最劝退。
+        """
+        dx = (pos.x() - self.pet_cx) / max(self.body_w * 0.58, 1.0)
+        dy = (pos.y() - self.pet_cy) / max(self.body_h * 0.58, 1.0)
+        return dx * dx + dy * dy <= 1.0
+
+    # ---------------------------------------------------------------- 控制面板
+    def open_panel(self) -> None:
+        """点桌宠 -> 弹出开关面板（延迟导入：不开面板就不加载这套代码）。"""
+        from .panel import ControlPanel
+        if self._panel is None:
+            self._panel = ControlPanel(self)
+        self._panel.popup_near(self)
+        self._panel_anchor = QPointF(self._pos)
+
+    def _close_panel(self) -> None:
+        if self._panel is not None and self._panel.isVisible():
+            self._panel.close()
+
+    def _on_power_click(self) -> None:
+        if self.control is not None:
+            self.control.toggle()
 
     # ---------------------------------------------------------------- 鼠标
     def mousePressEvent(self, ev) -> None:  # noqa: N802
-        if ev.button() == Qt.MouseButton.LeftButton:
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.accept()
+            return
+        pos = ev.position()
+        self._press_at = pos
+        self._drag_moved = False
+
+        if self._in_button(pos):
+            self._press_target = "btn"
+        elif self._in_body(pos):
+            self._press_target = "body"
             self._dragging = True
             self._drag_grab = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.raise_()
+            self._close_panel()
+        else:
+            self._press_target = ""
+            self._close_panel()      # 点透明空白 = 收面板
         ev.accept()
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802
-        if self._dragging:
-            pos = ev.globalPosition().toPoint() - self._drag_grab
-            self.move(pos)
-            self._pos = QPointF(pos)
-            self._target = QPointF(pos)
+        pos = ev.position()
+
+        # 区分"点一下"和"拖着走"：位移超过 5px 才算拖。
+        # 不区分的话，点桌宠开面板会顺带把它挪几像素，手感很差。
+        if self._press_at is not None and not self._drag_moved:
+            if (pos - self._press_at).manhattanLength() > 5:
+                self._drag_moved = True
+
+        if self._dragging and self._drag_moved:
+            p = ev.globalPosition().toPoint() - self._drag_grab
+            self.move(p)
+            self._pos = QPointF(p)
+            self._target = QPointF(p)
+        elif self._press_at is None:
+            over = self._in_button(pos)
+            if over != self._hover_btn:
+                self._hover_btn = over
+                self.setToolTip("")
+                if over:
+                    self.setToolTip("关闭手势识别" if self._enabled else "开启手势识别")
+                self.update()
         ev.accept()
 
     def mouseReleaseEvent(self, ev) -> None:  # noqa: N802
-        if ev.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-            self.setCursor(Qt.CursorShape.OpenHandCursor)
-            self.pet_me()
+        if ev.button() != Qt.MouseButton.LeftButton:
+            ev.accept()
+            return
+        self._dragging = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        target, moved = self._press_target, self._drag_moved
+        self._press_at = None
+        self._press_target = ""
+
+        if not moved:
+            if target == "btn":
+                self._on_power_click()
+            elif target == "body":
+                self.pet_me()
+                self.open_panel()
+        else:
             # 用户刚把它摆好，10 秒内别自己跑走（否则"我放这儿"的意图被无视）
             self._park_until = time.monotonic() + 10.0
         ev.accept()

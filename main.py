@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-手势控制电脑 —— 主程序
+手势控制电脑 —— HUD 版主程序（带摄像头预览窗口的调试/演示用界面）
 
-功能
-    单手：✋ 播放/暂停  ✊ 静音  👍/👎 音量  ✌️ 切窗口  ☝️ 下一页
-    双手：捏合后拉开/收拢 → 音量连续调节
-          双手张开上下移动 → 页面滚动
-    安全：双手高举 1.5 秒 → 开启/关闭全部控制（也是紧急停止）
+功能（2026-11 按"单手管窗口、双手管音乐"重排）
+    单手（操作当前前台窗口）
+        ✋ 张开      最大化 / 还原
+        ✊ 握拳      最小化
+        ✌️ 剪刀手    切换窗口（Alt+Tab）
+        ☝️ 食指      贴左/右半屏（左手贴左、右手贴右）
+        👍 点赞      置顶 / 取消置顶
+        👎 踩        收起所有窗口（Win+D）
+        🤏 捏合      只摸桌宠，不动系统
+    双手（音乐，两只手必须同一个手势）
+        ✋✋ 播放/暂停   ✊✊ 静音   👍👍 音量+   👎👎 音量-   ✌️✌️ 下一首   ☝️☝️ 上一首
+    安全
+        双手同时捏合保持 1 秒 -> 开启/关闭全部控制（也是紧急停止）
 
 用法
     python main.py                 # 正常模式（会真的发送系统按键）
@@ -35,16 +43,11 @@ from camera import open_camera          # 摄像头打开逻辑与桌宠（pet/�
 import gestures
 from gestures import (
     GESTURE_CN,
-    ContinuousMapper,
     Debouncer,
     GestureSmoother,
-    SequenceDetector,
     MotionGate,
-    PinchTapDetector,
-    StepAccumulator,
     analyze_two_hands,
     fingers_up,
-    pinch_affinity,
     pinch_ratio,
 )
 
@@ -61,24 +64,35 @@ except Exception:
     pass
 
 # --------------------------------------------------------------- 手势 → 动作
-# 左右手各一张表，同一种手势在两只手上可以做不同的事（这才是"区分左右手"的用处）。
-# 动作名见 actions.ACTIONS，改一行就能换功能。
+# 单手 = 操作窗口（左右手分开写：☝️ 指哪边、窗口就往哪边贴）。
+# 动作名见 actions.WINDOW_ACTIONS / actions.ACTIONS，改一行就能换功能。
 GESTURE_ACTIONS_RIGHT: Dict[str, str] = {
-    "OPEN_PALM": "play_pause",     # ✋
-    "FIST": "mute",                # ✊
-    "THUMB_UP": "vol_up",          # 👍
-    "THUMB_DOWN": "vol_down",      # 👎
-    "VICTORY": "alt_tab",          # ✌️
-    "POINT": "page_down",          # ☝️ 下一页
+    "OPEN_PALM": "win_max",        # ✋ 最大化 / 还原
+    "FIST": "win_min",             # ✊ 最小化
+    "VICTORY": "alt_tab",          # ✌️ 切换窗口
+    "POINT": "win_snap_right",     # ☝️ 贴右半屏
+    "THUMB_UP": "win_topmost",     # 👍 置顶 / 取消置顶
+    "THUMB_DOWN": "win_desktop",   # 👎 收起所有窗口
 }
 
 GESTURE_ACTIONS_LEFT: Dict[str, str] = {
+    "OPEN_PALM": "win_max",
+    "FIST": "win_min",
+    "VICTORY": "alt_tab",
+    "POINT": "win_snap_left",      # ☝️ 左手贴左半屏
+    "THUMB_UP": "win_topmost",
+    "THUMB_DOWN": "win_desktop",
+}
+
+# 双手 = 音乐。两只手做**同一个**手势才算数（见主循环里的 common 判定）：
+# 左右不一样什么都不做，避免"一只手路过镜头"把音乐切了。
+PAIR_ACTIONS: Dict[str, str] = {
     "OPEN_PALM": "play_pause",
     "FIST": "mute",
     "THUMB_UP": "vol_up",
     "THUMB_DOWN": "vol_down",
-    "VICTORY": "alt_tab",
-    "POINT": "page_up",            # ☝️ 上一页（右手是下一页）
+    "VICTORY": "next_track",
+    "POINT": "prev_track",
 }
 
 # 兼容旧引用
@@ -86,13 +100,28 @@ GESTURE_ACTIONS = GESTURE_ACTIONS_RIGHT
 
 # 动作的中文描述，仅用于 HUD 显示
 ACTION_CN: Dict[str, str] = {
+    "win_max": "最大化/还原",
+    "win_min": "最小化",
+    "win_topmost": "置顶",
+    "win_snap_left": "贴左半屏",
+    "win_snap_right": "贴右半屏",
+    "win_desktop": "显示桌面",
     "play_pause": "播放/暂停",
     "mute": "静音",
     "vol_up": "音量+",
     "vol_down": "音量-",
     "alt_tab": "切换窗口",
+    "next_track": "下一首",
+    "prev_track": "上一首",
     "page_down": "下一页",
     "page_up": "上一页",
+}
+
+# 窗口动作的结果码 -> HUD 上显示的字（同一个手势可能做两件相反的事）
+WIN_RES_CN: Dict[str, str] = {
+    "max": "最大化", "restore": "还原", "min": "最小化",
+    "top": "置顶", "untop": "取消置顶",
+    "left": "贴左半屏", "right": "贴右半屏", "desktop": "显示桌面",
 }
 
 
@@ -183,22 +212,26 @@ def build_legend(tc: "TextCache") -> Optional[np.ndarray]:
     from PIL import Image, ImageDraw
 
     rows = [
-        ("张开手掌  左/右", "播放 / 暂停"),
-        ("握拳  左/右", "静音"),
-        ("点赞  左/右", "音量 +"),
-        ("踩  左/右", "音量 -"),
-        ("剪刀手  左/右", "切换窗口"),
-        ("食指  右手", "下一页"),
-        ("食指  左手", "上一页"),
-        ("双手捏合·拉开", "网页缩放"),
-        ("双手捏合 连捏两次", "缩放回 100%"),
-        ("双手张开 上下移", "页面滚动"),
-        ("两手同时 握拳·张开两遍", "总开关"),
+        ("张开手掌  单手", "最大化 / 还原"),
+        ("握拳  单手", "最小化"),
+        ("剪刀手  单手", "切换窗口"),
+        ("食指  右手", "窗口贴右半屏"),
+        ("食指  左手", "窗口贴左半屏"),
+        ("点赞  单手", "窗口置顶 / 取消"),
+        ("踩  单手", "收起所有窗口"),
+        ("捏合  单手", "只摸桌宠，不动系统"),
+        ("双手 都张开", "播放 / 暂停"),
+        ("双手 都握拳", "静音"),
+        ("双手 都点赞", "音量 +"),
+        ("双手 都踩", "音量 -"),
+        ("双手 都剪刀手", "下一首"),
+        ("双手 都食指", "上一首"),
+        ("双手 同时捏合保持 1 秒", "总开关（紧急停止）"),
         ("握拳要收拇指", "伸在外面算点赞"),
     ]
     font = tc.font
     pad, gap, line_h = 14, 20, 26
-    title = "手势 → 功能"
+    title = "手势 → 功能（单手窗口 · 双手音乐）"
 
     probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
     left_w = max(probe.textlength(a, font=font) for a, _ in rows)
@@ -234,16 +267,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--test", action="store_true", help="只识别不执行（安全调试）")
     p.add_argument("--debug", action="store_true", help="显示五指状态与捏合比，便于校准阈值")
-    p.add_argument("--toggle-window", type=float, default=0.8,
-                   help="总开关：相邻两步之间最多隔多少秒（默认 0.8，越小事越要求快）")
+    p.add_argument("--toggle-hold", type=float, default=1.0,
+                   help="双手同时捏合保持多少秒 = 总开关（默认 1.0，越小事越容易误触）")
     p.add_argument("--hold", type=float, default=0.5,
                    help="手势需悬停多少秒才触发（默认 0.5）")
     p.add_argument("--cooldown", type=float, default=0.6, help="同一手势冷却秒数")
     p.add_argument("--grace", type=float, default=0.35,
                    help="短暂丢检宽容秒数（默认 0.35：丢失不超过这么久不清零悬停计时）")
-    p.add_argument("--zoom-step", type=float, default=0.35,
-                   help="双手缩放：两手间距每变化多少个掌长走一格（默认 0.35 ≈ 3cm）。"
-                        "嫌太灵敏就调大，比如 0.5")
+    p.add_argument("--pair-hold", type=float, default=0.4,
+                   help="双手同手势要保持多少秒才触发音乐（默认 0.4）")
     p.add_argument("--still-speed", type=float, default=0.6,
                    help="手移动多快就不算「稳住」（单位：掌长/秒，默认 0.6）。"
                         "调小手更难触发、但更不容易误触；调大更容易触发")
@@ -322,22 +354,18 @@ def main() -> int:
     # 提示文字按实际参数生成（改 --hold 后 HUD 也要跟着变，
     # 写死字符串的话改完参数界面上还在显示旧值，很容易看错）
     hint = (f"手势悬停 {args.hold:g}s 触发   |   "
-            f"双手握拳张开两遍 开关")
+            f"单手=窗口 · 双手=音乐 · 双手捏合 {args.toggle_hold:g}s 开关")
 
     # 状态机
     deb_single = Debouncer(args.hold, args.cooldown, grace=args.grace)
     smoother = GestureSmoother(window=5, need=3)   # 多数表决，压掉模型零星翻车
     gate = None if args.no_still_gate else MotionGate(max_speed=args.still_speed)
-    # 总开关：双手 ✊ → ✋ → ✊ → ✋（快速连做两次）
-    toggle_seq = SequenceDetector(
-        [("FIST", "FIST"), ("OPEN_PALM", "OPEN_PALM"),
-         ("FIST", "FIST"), ("OPEN_PALM", "OPEN_PALM")],
-        window=args.toggle_window)
-    # deadzone = 双手间距需累积变化 1.4% 才触发一格缩放（原来 0.4% 太灵敏）
-    # 缩放：每累计移动 --zoom-step 个掌长才走一格（默认 0.35 ≈ 3cm）
-    zoom_map = StepAccumulator(step_size=args.zoom_step)
-    pinch_tap = PinchTapDetector()
-    scroll_map = ContinuousMapper(gain=26.0, max_step=3.0, deadzone=0.004)
+    # 双手（音乐）：配对也要表决 + 悬停确认。
+    # 以前双手没有任何滤波，一帧翻车就把累计状态清掉 —— 这是"双手操作做不出来"
+    # 的真正原因，不只是手感问题。
+    deb_pair = Debouncer(args.pair_hold, 0.7, grace=args.grace)
+    pair_smoother = GestureSmoother(window=5, need=3)
+    pinch_since: Optional[float] = None      # 双手捏合开始计时（总开关）
 
     enabled = True
     do_action = not args.test
@@ -409,33 +437,39 @@ def main() -> int:
                 trace["none" if st.count == 0 else
                       ("only1" if st.count == 1 else "two")] += 1
 
-            # ---------------- 安全：双手 ✊✋✊✋ -> 开关控制 ----------------
-            # 必须双手同时做，且整串动作在几秒内完成；单手做不了，
-            # 避免正常用 ✊(静音) 和 ✋(播放/暂停) 时误触总开关。
-            pair = ((st.left_gesture, st.right_gesture) if st.count == 2 else None)
-            if toggle_seq.update(pair, now) and now - last_toggle > 2.0:
-                enabled = not enabled
-                last_toggle = now
-                toggle_seq.reset()
-                deb_single.reset()
-                zoom_map.reset()
-                scroll_map.reset()
-                print(f"[{'ON ' if enabled else 'OFF'}] 手势控制{'已开启' if enabled else '已关闭'}")
+            # ---------------- 安全：双手同时捏合保持 -> 开关控制 ----------------
+            # 必须两只手一起捏住并**保持** --toggle-hold 秒：这是紧急停止，
+            # 不能挥手就触发。
+            # 为什么不做成 ✊✋✊✋ 序列了：双手握拳/张开现在本身就是音乐的
+            # 静音和播放/暂停，序列会被这两个动作吃掉一半，永远走不完。
+            both_pinch = (st.count == 2 and st.left_gesture == "PINCH"
+                          and st.right_gesture == "PINCH")
+            toggle_progress = 0.0
+            if both_pinch:
+                if pinch_since is None:
+                    pinch_since = now
+                toggle_progress = min(1.0, (now - pinch_since)
+                                      / max(args.toggle_hold, 1e-6))
+                if toggle_progress >= 1.0 and now - last_toggle > 2.0:
+                    enabled = not enabled
+                    last_toggle = now
+                    pinch_since = None
+                    deb_single.reset()
+                    deb_pair.reset()
+                    print(f"[{'ON ' if enabled else 'OFF'}] 手势控制"
+                          f"{'已开启' if enabled else '已关闭'}")
+            else:
+                pinch_since = None
 
             action_now = ""
             moving_now = False
+            pair_now = None
 
-            if enabled and toggle_seq.step > 0:
-                # 总开关序列进行中：先别执行普通手势。
-                # 序列里有两步是「双手张开」，而双手张开恰好是滚动的起点，
-                # 不掐掉的话做开关动作会顺手滚一下页面。
-                deb_single.update(None, now)
-                zoom_map.reset()
-                scroll_map.reset()
-            elif enabled:
+            if enabled:
                 if st.count == 1:
-                    # ---------------- 单手：离散命令 ----------------
-                    pinch_tap.reset()     # 只剩一只手，快速捏合状态作废
+                    # ---------------- 单手：操作窗口 ----------------
+                    deb_pair.reset()      # 只剩一只手，双手配对作废
+                    pair_smoother.reset()
                     hand = st.left or st.right
                     g = st.left_gesture if st.left is not None else st.right_gesture
                     if g == "UNKNOWN":
@@ -452,74 +486,70 @@ def main() -> int:
                     if fired and stable:
                         if args.trace:
                             trace["fired"] += 1
-                        # 按手的左右取不同的动作表
+                        # 按手的左右取不同的动作表（☝️ 左手贴左、右手贴右）
                         table = (GESTURE_ACTIONS_LEFT if hand.side == "left"
                                  else GESTURE_ACTIONS_RIGHT)
                         act = table.get(stable)
-                        if act and do_action:
-                            import actions as _a
-                            _a.run_action(act)
-                            action_now = ACTION_CN.get(act, act)
-                        elif act:
-                            action_now = "（测试）" + ACTION_CN.get(act, act)
+                        if act:
+                            label = ACTION_CN.get(act, act)
+                            if not do_action:
+                                action_now = "（测试）" + label
+                            elif act in actions.WINDOW_ACTIONS:
+                                # 窗口动作返回"做成了什么"，而不是布尔：
+                                # 同一个 ✋ 可能是最大化也可能是还原
+                                res = actions.run_window_action(act)
+                                action_now = WIN_RES_CN.get(res, "没有可操作的窗口")
+                            else:
+                                actions.run_action(act)
+                                action_now = label
                 elif st.count == 2:
-                    # ---------------- 双手：连续控制 ----------------
+                    # ---------------- 双手：音乐 ----------------
                     deb_single.update(None, now)   # 抑制单手指令
                     if gate is not None:
-                        gate.reset()               # 双手模式下不判静止，清掉位置历史
+                        gate.reset()               # 双手模式下不判静止
 
-                    l, r = st.left, st.right
-                    both_pinch = st.left_gesture == "PINCH" and st.right_gesture == "PINCH"
-                    both_open = st.left_gesture == "OPEN_PALM" and st.right_gesture == "OPEN_PALM"
-
-                    # 双手快速捏合（捏一下就松，且没拉开）-> 网页缩放恢复 100%
-                    if pinch_tap.update(both_pinch, st.distance or 0.0, now):
-                        zoom_map.reset()
-                        if do_action:
-                            actions.zoom_reset()
-                        action_now = "重置缩放 100%"
-
-                    if both_pinch and st.distance:
-                        # 双手捏合拉开/收拢 -> Ctrl+滚轮缩放（浏览器里就是放大网页）
-                        n = zoom_map.update(st.distance)
-                        if n:
-                            label = "放大" if n > 0 else "缩小"
-                            if do_action:
-                                res = actions.zoom(n)
-                                if res == "blocked":
-                                    # 光标压在桌面/资源管理器上：跳过来保护图标大小
-                                    label = "跳过·图标保护"
-                                    zoom_map.reset()
-                            action_now = label
-                    elif both_open:
-                        # 双手同向上下移 -> 滚动
-                        zoom_map.reset()
-                        mid_y = float((l.center[1] + r.center[1]) / 2)
-                        step = scroll_map.update(mid_y)
-                        if abs(step) > 0.08:
-                            if do_action:
-                                actions.scroll(-step)
-                            action_now = "滚动"
+                    if both_pinch:
+                        # 捏合是总开关专用（上面正在计时），不参与音乐配对
+                        deb_pair.update(None, now)
+                        pair_smoother.reset()
                     else:
-                        zoom_map.reset()
-                        scroll_map.reset()
+                        # 只认"两只手同一个手势"：左右不一致就当作没有意图，
+                        # 一只手路过画面不该把正在放的音乐切了
+                        l_g, r_g = st.left_gesture, st.right_gesture
+                        common = (l_g if (l_g == r_g and l_g and l_g != "UNKNOWN")
+                                  else None)
+                        pair_now = pair_smoother.update(common)
+                        stable_p, fired_p = deb_pair.update(pair_now, now)
+                        if fired_p and stable_p:
+                            act = PAIR_ACTIONS.get(stable_p)
+                            if act:
+                                if do_action:
+                                    actions.run_action(act)
+                                action_now = ACTION_CN.get(act, act)
                 else:
                     deb_single.update(None, now)
-                    pinch_tap.reset()
+                    deb_pair.reset()
+                    pair_smoother.reset()
                     smoother.reset()      # 手离开画面就清空表决缓冲，免得旧票影响下次
                     if gate is not None:
                         gate.reset()
-                    zoom_map.reset()
-                    scroll_map.reset()
 
                 if action_now:
                     last_action = action_now
                     last_action_at = now
             else:
                 deb_single.update(None, now)
+                deb_pair.update(None, now)
 
             # ---------------- 绘制 ----------------
             vis = frame
+            # 进度条：单手看悬停计时，双手看配对确认 / 捏合保持
+            bar = 0.0
+            if enabled:
+                if st.count == 2:
+                    bar = toggle_progress if both_pinch else deb_pair.progress
+                elif st.count == 1 and deb_single.stable is None:
+                    bar = deb_single.progress
             if show_skeleton:
                 for hd in hands:
                     draw_hand(vis, hd, (0, 220, 120))
@@ -546,14 +576,13 @@ def main() -> int:
                                 0.4, (180, 180, 255), 1, cv2.LINE_AA)
 
                 # 悬停进度条：举着手时能看见还差多少才触发
-                if (idx_h == 0 and enabled and deb_single.progress > 0
-                        and deb_single.stable is None):
+                if idx_h == 0 and enabled and bar > 0:
                     bw = 76
                     bx = max(0, min(w - bw, px - bw // 2))
                     by = max(0, min(h - 10, py + 58))
                     cv2.rectangle(vis, (bx, by), (bx + bw, by + 7), (58, 58, 62), -1)
                     cv2.rectangle(vis, (bx, by),
-                                  (bx + int(bw * deb_single.progress), by + 7),
+                                  (bx + int(bw * bar), by + 7),
                                   (0, 225, 120), -1)
                     if moving_now:
                         # 进度条变灰的另一种提示：手在动，计时是冻结的
@@ -581,8 +610,12 @@ def main() -> int:
                 cv2.putText(vis, f"raw={deb_single._cand or '-'} hold={deb_single.progress * 100:3.0f}%",
                             (360, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 255, 120), 1, cv2.LINE_AA)
             put_cn(vis, hint, 10, 38, tc, (200, 200, 200))
-            if toggle_seq.step:
-                put_cn(vis, f"总开关 {toggle_seq.step}/4", 10, 64, tc, (0, 170, 255))
+            if enabled and both_pinch and toggle_progress > 0:
+                put_cn(vis, f"总开关 {toggle_progress * 100:3.0f}%"
+                            f"（保持 {args.toggle_hold:g}s 切换）", 10, 64, tc, (0, 170, 255))
+            elif st.count == 2 and pair_now:
+                put_cn(vis, f"双手 · {GESTURE_CN.get(pair_now, pair_now)}", 10, 64, tc,
+                       (120, 255, 120))
 
             # 右侧「手势 -> 功能」图例
             if legend is not None:

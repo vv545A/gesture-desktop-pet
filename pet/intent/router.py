@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Optional, Tuple
+from typing import Tuple
 
 from ..core.bus import EventBus
 from ..core.engine import Fired
@@ -92,7 +92,17 @@ class IntentRouter:
             return False, self._load_error or "动作模块不可用", "我发不出按键…"
 
         try:
-            # 3) 连续量
+            # 3) 窗口操作（win_max / win_snap_left …）。
+            #    返回值是"做成了什么"（max / restore / top / no_window），
+            #    不是布尔 —— 因为同一个手势可能做两件相反的事，台词得跟着结果走。
+            win_actions = getattr(mod, "WINDOW_ACTIONS", {})
+            if intent.key in win_actions:
+                res = mod.run_window_action(intent.key)
+                ok = res not in ("no_window", "unknown", "failed")
+                bubble = mapping.window_bubble(intent.key, res) or intent.bubble
+                return ok, res, bubble
+
+            # 4) 连续量
             if intent.key == "zoom":
                 res = mod.zoom(int(value))
                 if res == "blocked":
@@ -107,7 +117,7 @@ class IntentRouter:
                 mod.scroll(-value)         # 手往上 -> 页面向下（同 main.py）
                 return True, "scroll", intent.bubble
 
-            # 4) 离散动作
+            # 5) 离散按键动作（alt_tab / play_pause / next_track …）
             ok = mod.run_action(intent.key)
             return ok, "" if ok else "run_action 返回 False", intent.bubble
         except Exception as e:

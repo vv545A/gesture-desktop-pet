@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-托盘菜单 —— 桌宠的"控制面板"。
+托盘菜单 —— 桌宠的"常驻控制面板"。
 
 桌宠没有主窗口、没有标题栏，用户找不到"设置"在哪里，所以托盘必须承担：
-    * 开关手势（和"双手 ✊✋✊✋"等效，是鼠标党的备用通道）
-    * 切换点击穿透（宠物挡住东西时唯一的解法）
+    * 开关手势（等效于桌宠右上角的 ×、点桌宠弹出的面板、双手捏合保持，
+      四个入口调用的是同一个 ControlCenter，不会出现"这边开了那边还显示关"）
+    * 切换点击穿透（宠物挡住东西时唯一的解法——穿透之后桌宠点不到了，
+      只能从这里或从面板里关掉）
     * 切换跟随方式
     * 查看手势表（不用翻 README）
     * 退出
 
 菜单项全部是"状态镜像 + 回调"，不在这里保存业务状态——
-真正的状态在 GestureEngine 和 Config 里，菜单只是它们的一面镜子。
+真正的状态在 ControlCenter / Config 里，菜单只是它们的一面镜子。
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ class PetTray:
         self.window = window
         self.bus = bus
         self.engine = engine
+        self.control = getattr(window, "control", None)
         self._on_quit = on_quit
 
         # 托盘只显示 16~20px，画全身会糊成一个点：这里用"头像"版本
@@ -44,10 +47,14 @@ class PetTray:
 
         menu = QMenu()
 
-        self.act_enabled = QAction("手势控制", menu, checkable=True)
-        self.act_enabled.setChecked(engine.enabled)
+        self.act_enabled = QAction("手势识别", menu, checkable=True)
+        self.act_enabled.setChecked(self._enabled())
         self.act_enabled.triggered.connect(self._toggle_enabled)
         menu.addAction(self.act_enabled)
+
+        act_panel = QAction("打开控制面板（也点一下桌宠）", menu)
+        act_panel.triggered.connect(self.window.open_panel)
+        menu.addAction(act_panel)
 
         self.act_through = QAction("点击穿透（宠物不挡鼠标）", menu, checkable=True)
         self.act_through.setChecked(window.cfg.click_through)
@@ -59,6 +66,7 @@ class PetTray:
         follow = menu.addMenu("跟随方式")
         group = QActionGroup(follow)
         group.setExclusive(True)
+        self._follow_actions = {}
         for key, label in (("hand", "跟着手掌"), ("cursor", "跟着鼠标"),
                            ("corner", "守在角落")):
             a = QAction(label, follow, checkable=True)
@@ -66,6 +74,7 @@ class PetTray:
             a.triggered.connect(lambda _c, k=key: self._set_follow(k))
             group.addAction(a)
             follow.addAction(a)
+            self._follow_actions[key] = a
 
         act_help = QAction("手势对照表", menu)
         act_help.triggered.connect(self._show_help)
@@ -78,10 +87,19 @@ class PetTray:
 
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
+        # 状态镜像：不管是谁改的（桌宠按钮 / 面板 / 双手捏合），菜单跟着变。
+        # 事件 + 每次展开菜单时再同步一次 —— 面板改的"穿透/跟随方式"不走事件，
+        # 展开时补一次最省事，也不会漏。
+        self._menu = menu
+        menu.aboutToShow.connect(self._sync_menu)
+        bus.subscribe(ControlToggled, self._on_toggle_event)
 
     # ---------------------------------------------------------------- 显示
     def show(self) -> None:
         self.tray.show()
+
+    def _enabled(self) -> bool:
+        return bool(self.control.enabled) if self.control is not None else self.engine.enabled
 
     def _on_activated(self, reason) -> None:
         # 左键点托盘：把宠物叫回来（常见需求：不知道跑哪去了）
@@ -90,9 +108,23 @@ class PetTray:
             self.window.say("在这儿呢～", "happy")
 
     # ---------------------------------------------------------------- 菜单
+    def _on_toggle_event(self, ev) -> None:
+        assert isinstance(ev, ControlToggled)
+        self.act_enabled.setChecked(ev.enabled)
+
+    def _sync_menu(self) -> None:
+        """展开菜单时把所有勾选状态对齐到真实状态（唯一事实来源是 ControlCenter/Config）。"""
+        self.act_enabled.setChecked(self._enabled())
+        self.act_through.setChecked(bool(self.window.cfg.click_through))
+        for key, act in self._follow_actions.items():
+            act.setChecked(self.window.cfg.follow == key)
+
     def _toggle_enabled(self, checked: bool) -> None:
-        self.engine.set_enabled(checked)
-        self.bus.post(ControlToggled(enabled=checked))
+        if self.control is not None:
+            self.control.set_enabled(checked)      # 它负责发 ControlToggled
+        else:
+            self.engine.set_enabled(checked)
+            self.bus.post(ControlToggled(enabled=checked))
 
     def _toggle_through(self, checked: bool) -> None:
         self.window.cfg.click_through = checked
@@ -107,8 +139,6 @@ class PetTray:
         self.bus.post(PetSay(text=label, mood="happy"))
 
     def _show_help(self) -> None:
-        text = (mapping.describe_table()
-                + "\n\n双手：捏合拉开 = 缩放 · 两下捏合 = 复位 · "
-                  "同时张开上下移 = 滚动\n双手 ✊✋✊✋ 两遍 = 开关全部控制")
-        self.bus.post(PetSay(text=text[:60] + "…（完整表在 README）", mood="calm"))
+        text = mapping.describe_table()
+        self.bus.post(PetSay(text="对照表打到控制台啦～", mood="calm"))
         print("\n" + text + "\n")
