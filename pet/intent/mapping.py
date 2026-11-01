@@ -43,7 +43,55 @@ class Intent:
 # 左右手分开写：☝️ 指哪边、窗口就贴哪边——这是"区分左右手"最直观的用法。
 SINGLE_HINT = "单手 = 操作窗口"
 
-_SINGLE: Dict[Tuple[str, str], Intent] = {
+#: 单手能用的手势（对照表页面的左列按这个顺序排）
+SINGLE_GESTURES = ("OPEN_PALM", "FIST", "VICTORY", "POINT",
+                   "THUMB_UP", "THUMB_DOWN", "PINCH")
+#: 双手能用的手势（捏合留给"总开关"，不算音乐手势）
+PAIR_GESTURES = ("OPEN_PALM", "FIST", "VICTORY", "POINT",
+                 "THUMB_UP", "THUMB_DOWN")
+
+#: 手势的显示名。用中文而不是 emoji：Qt 在有些机器上根本没有 emoji 字体，
+#: 显示成方块比不显示更糟。
+GESTURE_LABEL = {
+    "OPEN_PALM": "张开手掌",
+    "FIST": "握拳",
+    "VICTORY": "剪刀手",
+    "POINT": "食指",
+    "THUMB_UP": "点赞",
+    "THUMB_DOWN": "踩",
+    "PINCH": "捏合",
+}
+
+#: 动作目录 —— 对照表页面的下拉框就是这份。key 与 actions / router 里的动作键
+#: 一一对应，value 是 (中文名, 表情)。加新动作只改这里和 actions.py。
+ACTION_CATALOG: Dict[str, Tuple[str, str]] = {
+    # ---- 窗口（单手主线）----
+    "win_max": ("最大化 / 还原", "happy"),
+    "win_min": ("最小化", "happy"),
+    "win_topmost": ("置顶 / 取消置顶", "proud"),
+    "win_snap_left": ("贴左半屏", "happy"),
+    "win_snap_right": ("贴右半屏", "happy"),
+    "win_desktop": ("收起所有窗口", "calm"),
+    # ---- 媒体 / 键盘 ----
+    "play_pause": ("播放 / 暂停", "happy"),
+    "mute": ("静音", "calm"),
+    "vol_up": ("音量 +", "happy"),
+    "vol_down": ("音量 −", "calm"),
+    "next_track": ("下一首", "happy"),
+    "prev_track": ("上一首", "calm"),
+    "alt_tab": ("切换窗口", "happy"),
+    "page_down": ("下一页", "calm"),
+    "page_up": ("上一页", "calm"),
+    "escape": ("Esc 键", "calm"),
+    "space": ("空格", "calm"),
+    "enter": ("回车", "calm"),
+    "scroll_up": ("向上滚", "calm"),
+    "scroll_down": ("向下滚", "calm"),
+    # ---- 只让桌宠反应，不碰系统 ----
+    "pet:pat": ("摸摸桌宠", "shy"),
+}
+
+_DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = {
     # ✋ 张开 -> 最大化 / 还原（同一个手势，按窗口当前状态决定做哪一半）
     ("right", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
     ("left", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
@@ -74,7 +122,7 @@ _SINGLE: Dict[Tuple[str, str], Intent] = {
 # 而且记不住。同手势 → 一个功能，是唯一能被记住的双手玩法。
 PAIR_HINT = "双手 = 音乐（两手同一个手势）"
 
-_PAIR: Dict[str, Intent] = {
+_DEFAULT_PAIR: Dict[str, Intent] = {
     "OPEN_PALM": Intent("play_pause", "播放/暂停", "音乐，走你～"),
     "FIST": Intent("mute", "静音", "嘘——安静啦"),
     "THUMB_UP": Intent("vol_up", "音量+", "大声一点！"),
@@ -82,6 +130,16 @@ _PAIR: Dict[str, Intent] = {
     "VICTORY": Intent("next_track", "下一首", "换一首听听～"),
     "POINT": Intent("prev_track", "上一首", "回到上一首…"),
 }
+
+# 运行时生效的两张表。默认就是上面那两张的副本，apply_bindings() 会在副本上
+# 改，所以"恢复默认"只要把副本重新 fill 一次，不会污染默认值。
+_SINGLE: Dict[Tuple[str, str], Intent] = dict(_DEFAULT_SINGLE)
+_PAIR: Dict[str, Intent] = dict(_DEFAULT_PAIR)
+
+# 被用户明确设成"不绑定"的单手组合。
+# 为什么需要这个集合：resolve() 对左手有一条 fallback（左手没写就用右手那套），
+# 只从 _SINGLE 里删掉的话，左手会立刻继承右手，等于"关不掉"。
+_DISABLED: set = set()
 
 # ------------------------------------------------------------------ 连续量
 # 缩放/滚动这一路当前**没有接手势**（双手留给音乐了），但动作实现完整保留：
@@ -119,11 +177,110 @@ def resolve(side: str, gesture: str) -> Optional[Intent]:
     """(手, 手势) -> 意图。side 为 "both" 时查双手表。查不到返回 None。"""
     if side == "both":
         return _PAIR.get(gesture)
+    if (side, gesture) in _DISABLED:
+        return None                     # 用户明确关掉了这个手势
     return _SINGLE.get((side, gesture)) or _SINGLE.get(("right", gesture))
 
 
 def continuous(kind: str) -> Optional[Intent]:
     return _CONTINUOUS.get(kind)
+
+
+# ------------------------------------------------------------------ 手势绑定
+# 用户在"手势对照表"页面里改的东西落在这里。
+#
+# 为什么是"覆盖层"而不是直接改 _SINGLE：
+#     用户可能只改一两条，剩下的应该继续跟着默认表走。以后默认值升级
+#     （比如把 ✋ 从"最大化"改成别的），没改过的条目会自动吃到新默认值，
+#     而不是永远停在用户第一次运行时的快照上。
+
+def binding_key(side: str, gesture: str) -> str:
+    """(手, 手势) -> 配置里存的那把 key，例如 "right:OPEN_PALM" / "both:FIST"。"""
+    return f"{side}:{gesture}"
+
+
+def _bubble_of(action: str) -> str:
+    """同一个动作在默认表里的台词 —— 换绑之后台词也该跟着动作走。"""
+    for table in (_DEFAULT_SINGLE.values(), _DEFAULT_PAIR.values()):
+        for it in table:
+            if it.key == action:
+                return it.bubble
+    return ""
+
+
+def _intent_for(action: str) -> Optional[Intent]:
+    """动作 key -> Intent。目录里没有的 key 一律忽略（配置文件被手改坏了也不崩）。"""
+    meta = ACTION_CATALOG.get(action)
+    if meta is None:
+        return None
+    label, mood = meta
+    return Intent(action, label, _bubble_of(action), mood)
+
+
+def default_bindings() -> Dict[str, str]:
+    """出厂状态：每一个 (手, 手势) 对应的动作。对照表页面的"恢复默认"用它。"""
+    out: Dict[str, str] = {}
+    for (side, g), it in _DEFAULT_SINGLE.items():
+        out[binding_key(side, g)] = it.key
+    for g, it in _DEFAULT_PAIR.items():
+        out[binding_key("both", g)] = it.key
+    return out
+
+
+def current_bindings() -> Dict[str, str]:
+    """现在实际生效的绑定（默认 + 用户改过的）。"""
+    out: Dict[str, str] = {}
+    for (side, g), it in _SINGLE.items():
+        out[binding_key(side, g)] = it.key
+    for g, it in _PAIR.items():
+        out[binding_key("both", g)] = it.key
+    return out
+
+
+def apply_bindings(overrides: Optional[Dict[str, str]]) -> None:
+    """
+    把用户的覆盖应用到运行时表上。
+
+    overrides 里"没有出现"的键 = 用默认；值为空串 = 明确取消这个手势
+    （页面上选"不绑定"）。动作名拼错/已被删掉时**保持默认**而不是清空：
+    配置文件被手改坏不该让一个手势凭空失效。
+    """
+    _SINGLE.clear()
+    _SINGLE.update(_DEFAULT_SINGLE)
+    _PAIR.clear()
+    _PAIR.update(_DEFAULT_PAIR)
+    _DISABLED.clear()
+
+    for key, action in (overrides or {}).items():
+        side, _, gesture = str(key).partition(":")
+        if side not in ("left", "right", "both") or not gesture:
+            continue
+        action = str(action or "")
+
+        if side == "both":
+            if not action:
+                _PAIR.pop(gesture, None)
+                continue
+            it = _intent_for(action)
+            if it is not None:
+                _PAIR[gesture] = it
+            continue
+
+        if not action:
+            _SINGLE.pop((side, gesture), None)
+            _DISABLED.add((side, gesture))
+            continue
+        it = _intent_for(action)
+        if it is not None:
+            _SINGLE[(side, gesture)] = it
+            _DISABLED.discard((side, gesture))
+
+
+def describe_action(action: str) -> str:
+    """动作 key -> 中文名（日志 / 提示用）。空串表示不绑定。"""
+    if not action:
+        return "不绑定"
+    return ACTION_CATALOG.get(action, (action, "happy"))[0]
 
 
 def _pad(text: str, width: int) -> str:

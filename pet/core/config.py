@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,6 +70,11 @@ class Config:
     pet_scale: float = 1.0
     follow: str = "hand"             # hand / cursor / window / corner
     follow_gain: float = 1.6         # 手掌位移 -> 屏幕位移的放大倍数
+    # 跟鼠标：身体中心与指针保持多远（太近会盖住指针，点什么都点不到）
+    cursor_trail: float = 110.0
+    # 跟鼠标：指针在宠物身上停多久才允许点击。
+    # 只留一点点防抖（120ms）：停住就是"我要点它"，拖太久会让人觉得点了没反应。
+    cursor_click_delay: float = 0.12
     always_on_top: bool = True
     click_through: bool = False      # 全屏穿透（桌宠不挡点击）
     home_corner: str = "br"          # br / bl / tr / tl
@@ -84,6 +89,12 @@ class Config:
     dock_y: float = 0.28             # 竖直锚点：0.28 = 窗口高度的 28% 处（避开标题栏）
     dock_side: str = "right"         # 优先站窗口右边（右边放不下会自动翻到左边）
     dock_title_len: int = 12         # 标签里窗口标题最多几个字
+    dock_face_front: bool = True     # 吸附时正面朝前（关掉会侧身看窗口）
+
+    # ---------------- 手势绑定（可在"手势对照表"页面里改） ----------------
+    # 键形如 "right:OPEN_PALM" / "both:FIST"，值是 action key（见 intent/mapping.py）。
+    # 只存"被改过的"条目：没改的走默认表，这样以后默认表升级也能吃到。
+    bindings: Dict[str, str] = field(default_factory=dict)
 
     # ---------------- 调试 ----------------
     preview: bool = False            # 预留：摄像头预览窗

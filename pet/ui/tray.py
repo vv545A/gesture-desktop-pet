@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from ..core.bus import EventBus
 from ..core.engine import GestureEngine
 from ..core.events import ControlToggled, PetSay
-from ..intent import mapping
 from .paint import tray_icon
 from .sprite import SpriteSet
 from .window import PetWindow
@@ -77,8 +76,8 @@ class PetTray:
             follow.addAction(a)
             self._follow_actions[key] = a
 
-        act_help = QAction("手势对照表", menu)
-        act_help.triggered.connect(self._show_help)
+        act_help = QAction("手势对照表（可修改）", menu)
+        act_help.triggered.connect(self.window.open_bindings)
         menu.addAction(act_help)
 
         menu.addSeparator()
@@ -135,11 +134,6 @@ class PetTray:
 
     def _set_follow(self, key: str) -> None:
         self.window.cfg.follow = key
-        label = {"hand": "好，我跟着你的手", "cursor": "跟着鼠标走～",
+        label = {"hand": "好，我跟着你的手", "cursor": "我吊在你鼠标后头～",
                  "window": "好，我贴着窗口边站", "corner": "我在这儿待着"}.get(key, "")
         self.bus.post(PetSay(text=label, mood="happy"))
-
-    def _show_help(self) -> None:
-        text = mapping.describe_table()
-        self.bus.post(PetSay(text="对照表打到控制台啦～", mood="calm"))
-        print("\n" + text + "\n")

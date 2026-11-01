@@ -24,7 +24,6 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from ..core.events import PetSay
-from ..intent import mapping
 from .paint import ui_font
 
 # 配色沿用桌宠的 DeepSeek 蓝，浅色卡片 + 一点点阴影
@@ -263,14 +262,17 @@ class ControlPanel(QWidget):
                 self.bus.post(PetSay(text="我先隐形啦，右键托盘图标能叫我回来", mood="shy"))
         elif key in ("hand", "cursor", "window", "corner"):
             self.cfg.follow = key
-            say = {"hand": "好，我跟着你的手", "cursor": "跟着鼠标走～",
+            say = {"hand": "好，我跟着你的手",
+                   "cursor": "我吊在你鼠标后头，鼠标停我身上才点得到我",
                    "window": "好，我贴着窗口边站，你按哪个窗口我就站哪个边上",
                    "corner": "我在这儿待着"}.get(key, "")
             self.bus.post(PetSay(text=say, mood="happy"))
         elif key == "help":
-            text = mapping.describe_table()
-            print("\n" + text + "\n")
-            self.win.say("对照表打到控制台啦～", "happy")
+            # 打开可编辑的对照表页面（不再是"打一行字到控制台"——
+            # 打包成无控制台的程序之后，那行字用户根本看不见）
+            self.close()
+            self.win.open_bindings()
+            return
         elif key == "quit":
             self.control.request_quit()
             return

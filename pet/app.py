@@ -27,7 +27,7 @@ from .core.bus import EventBus
 from .core.config import DEFAULT_CONFIG, Config
 from .core.control import ControlCenter
 from .core.engine import GestureEngine
-from .core.events import (ActionDone, ControlToggled, Event, GestureFired,
+from .core.events import (ActionDone, ControlToggled, GestureFired,
                           HandsSeen, PerceptionFailed, PerceptionReady, PetSay)
 from .intent import mapping
 from .intent.router import IntentRouter
@@ -69,7 +69,7 @@ def _snapshot(cfg: Config, path: str) -> int:
     跑一条命令就能看到结果，不用举着手对着屏幕反复试。
     """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
     from PyQt6.QtWidgets import QApplication
 
     from .ui.paint import PetPose, draw_aura, draw_glow, draw_shadow, draw_pet, ui_font
@@ -273,10 +273,6 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    if args.list_intents:
-        print(mapping.describe_table())
-        return 0
-
     cfg = Config.load(args.config or DEFAULT_CONFIG)
     cfg.override(cam=args.cam, pet_scale=args.pet_scale, hold=args.hold,
                  follow=args.follow, follow_gain=args.follow_gain,
@@ -284,6 +280,14 @@ def main(argv=None) -> int:
                  dry_run=args.dry_run)
     if args.demo:
         cfg.dry_run = True          # 演示绝不真的发按键
+
+    # 用户在"手势对照表"页面里改过的绑定，必须赶在任何一次 resolve 之前装上 ——
+    # 否则第一下手势用的还是默认表，看起来就像"改了没生效"。
+    mapping.apply_bindings(cfg.bindings)
+
+    if args.list_intents:
+        print(mapping.describe_table())
+        return 0
 
     if args.snapshot:
         return _snapshot(cfg, args.snapshot)

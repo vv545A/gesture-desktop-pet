@@ -79,7 +79,16 @@ class PetWindow(QWidget):
         self._btn_r = _clamp(11.0 * self.scale, 9.0, 13.0)
         self._btn_c = QPointF(self.win_w - self._btn_r - 6, self._btn_r + 6)
         self._hover_btn = False
+
+        # ---- 跟鼠标时的"自动穿透"状态 ----
+        # 跟鼠标的宠物整天在指针附近晃，如果窗口一直吃鼠标事件，用户点什么都点不到
+        # （这是用户报的 bug）。所以指针不在宠物身上时窗口整体鼠标穿透；
+        # 指针停在宠物身体上一小会儿，才解除穿透让人点它。
+        self._auto_through = False
+        self._hover_dwell = 0.0            # 指针在身体上已经停了多久
+
         self._panel = None                  # 弹出式控制面板（懒创建）
+        self._bindings = None               # 手势对照表页面（懒创建）
         self._panel_anchor = QPointF(0, 0)  # 开面板时宠物的位置（跟随用）
         self._press_at: Optional[QPointF] = None
         self._press_target = ""             # "btn" / "body" / ""
@@ -158,7 +167,20 @@ class PetWindow(QWidget):
             self.raise_()
 
     def set_click_through(self, on: bool) -> None:
-        """全屏鼠标穿透。开着的时候宠物不可点、也不挡你点别的东西。"""
+        """
+        手动穿透开关（面板 / 托盘调用）。
+
+        注意这里只写 cfg 不做判断：跟鼠标模式还有一个**自动**穿透，
+        两者是"或"的关系 —— 手动开了就一定穿透，手动关着时由自动逻辑决定。
+        """
+        self.cfg.click_through = bool(on)
+        self._apply_through()
+
+    def _apply_through(self) -> None:
+        """把"手动穿透 or 自动穿透"合并成窗口的真实状态。"""
+        self._win_set_through(bool(self.cfg.click_through) or self._auto_through)
+
+    def _win_set_through(self, on: bool) -> None:
         if sys.platform != "win32":
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, on)
             return
@@ -319,16 +341,86 @@ class PetWindow(QWidget):
         y = _clamp(y, r.top(), r.bottom() - self.win_h)
         self._target = QPointF(x, y)
 
-    def _follow_cursor(self) -> None:
+    def _cursor_on_pet(self, c: Optional[QPoint] = None) -> bool:
+        """指针是不是正压在宠物身上（身体矩形 + 一圈余量）。"""
+        c = QCursor.pos() if c is None else c
+        local = self.mapFromGlobal(c)
+        if not self.rect().contains(local):
+            return False
+        pad = 12.0
+        return (abs(local.x() - self.pet_cx) <= self.body_w / 2 + pad
+                and abs(local.y() - self.pet_cy) <= self.body_h / 2 + pad)
+
+    def _follow_cursor(self, dt: float) -> None:
+        """
+        鼠标尾随 —— 宠物被一根绳子拴在指针后面，而不是"坐"在指针上。
+
+        老做法是把窗口中心对准指针，结果一个 222x302 的窗口整个压在鼠标底下：
+        点什么都点不到，桌宠自己也被指针盖着点不着（用户报的 bug）。
+
+        现在的规则：
+            * 指针和身体中心距离超过 trail，才追过去，追到 trail 就停 ——
+              所以宠物总是"跟在后面"，不会盖住指针。
+            * 指针已经压在宠物身上时**一步也不动**，人可以稳稳地点它。
+            * 指针不在身上时窗口整体鼠标穿透（见 _update_cursor_through），
+              所以宠物窗口再大也挡不了别人家的点击。
+        """
         if self.cfg.follow != "cursor":
             return
-        if time.monotonic() < self._park_until:
+        if self._dragging or time.monotonic() < self._park_until:
             return
-        r = self._screen_rect()
+        # 面板开着的时候绝对不许动：面板是相对宠物定位的，宠物一挪面板就跑，
+        # 用户伸鼠标去点，反而永远点不中（这也是"点不到设置窗口"的一部分原因）。
+        if self._ui_open():
+            return
+
         c = QCursor.pos()
-        x = _clamp(c.x() - self.win_w / 2, r.left(), r.right() - self.win_w)
-        y = _clamp(c.y() - self.win_h * 0.85, r.top(), r.bottom() - self.win_h)
-        self._target = QPointF(x, y)
+        if self._cursor_on_pet(c):
+            return                       # 手指已经搭上来了，别动
+
+        trail = max(40.0, self.cfg.cursor_trail)
+        cx = self._target.x() + self.pet_cx
+        cy = self._target.y() + self.pet_cy
+        dx, dy = cx - c.x(), cy - c.y()
+        dist = math.hypot(dx, dy)
+        if dist <= trail:
+            return                       # 在绳子半径内：原地待着，等它自己靠近
+        if dist < 1e-3:
+            dx, dy, dist = 0.5, 0.87, 1.0
+        k = trail / dist
+        x = c.x() + dx * k - self.pet_cx
+        y = c.y() + dy * k - self.pet_cy
+        r = self._screen_rect()
+        self._target = QPointF(_clamp(x, r.left(), r.right() - self.win_w),
+                               _clamp(y, r.top(), r.bottom() - self.win_h))
+
+    def _update_cursor_through(self, dt: float) -> None:
+        """
+        跟鼠标模式下自动穿透。
+
+        判据是"指针在不在宠物身体上"，不是"在不在窗口矩形内" ——
+        窗口上方一大片是透明气泡区，用户根本看不见，却会吃点击。
+        指针停在身体上超过 cursor_click_delay 才解除穿透：划过一下不算，
+        停住就是"我要点它"。
+        """
+        if self.cfg.follow != "cursor":
+            if self._auto_through:
+                self._auto_through = False
+                self._hover_dwell = 0.0
+                self._apply_through()
+            return
+
+        if self._cursor_on_pet():
+            self._hover_dwell += dt
+            if (self._hover_dwell >= self.cfg.cursor_click_delay
+                    and self._auto_through):
+                self._auto_through = False          # 让人点它
+                self._apply_through()
+        else:
+            self._hover_dwell = 0.0
+            if not self._auto_through:
+                self._auto_through = True           # 别挡别人的点击
+                self._apply_through()
 
     # ---------------------------------------------------------------- 吸附窗口
     def _follow_window(self, now: float) -> None:
@@ -346,7 +438,7 @@ class PetWindow(QWidget):
         """
         if now < self._park_until or self._dragging:
             return
-        if self._panel is not None and self._panel.isVisible():
+        if self._ui_open():
             return
         if now < self._dock_next:
             return
@@ -391,18 +483,20 @@ class PetWindow(QWidget):
 
         # 1) 一段时间没看到手 -> 回角落待机。
         #    "没人的时候别赖在屏幕中间"是桌宠的基本礼貌。
-        #    吸附模式下不回家：它得守在操作目标旁边，位置由 _follow_window 决定。
+        #    吸附/跟鼠标两种模式下不回家：一个要守在操作目标旁边，
+        #    一个位置本来就由指针决定，抢位置只会让两边打架。
         quiet = now - self._last_hand
         if quiet > self.cfg.idle_after:
             if self._mood not in ("sleepy", "shy"):
                 self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
-            if (self.cfg.follow != "window" and not self._dragging
-                    and now > self._park_until):
+            if (self.cfg.follow not in ("window", "cursor") and not self._dragging
+                    and not self._ui_open() and now > self._park_until):
                 self._place_home(immediate=False)
 
         if self.cfg.follow == "window":
             self._follow_window(now)
-        self._follow_cursor()
+        self._follow_cursor(dt)
+        self._update_cursor_through(dt)
 
         # 2) 平滑移动：指数趋近，和帧率无关（掉帧只会变慢，不会瞬移）
         if not self._dragging:
@@ -422,12 +516,12 @@ class PetWindow(QWidget):
         if self.cfg.sprite_walk and now - self._facing_since > 0.25:
             self._facing = raw
 
-        # 2c) 吸附时直接面向窗口，不看速度：站在窗口右边就朝左看。
-        #     "回头看窗口"这一下比任何标签都直观，用户扫一眼就知道它在盯着谁。
-        if (self.cfg.follow == "window" and self.cfg.sprite_walk
-                and self._dock is not None and self._dock.dockable
-                and not self._dragging and abs(vx) < 40):
-            self._facing = -1 if self._dock_side == "right" else 1
+        # 2c) 吸附时正面朝前。
+        #     老版本让它"回头看窗口"（侧身），本意是暗示在看守谁；实际看下来
+        #     侧脸配一个贴边的小身板很像"被门夹住了"，而且吸附时人本来就知道
+        #     在操作哪个窗口（头顶还有标题标签）。所以这里统一回正面。
+        if self.cfg.follow == "window" and self.cfg.dock_face_front:
+            self._facing = 0
 
         # 3) 情绪超时后退回 idle
         if now > self._mood_until and self._mood not in ("idle", "sleepy"):
@@ -642,6 +736,27 @@ class PetWindow(QWidget):
             self._panel = ControlPanel(self)
         self._panel.popup_near(self)
         self._panel_anchor = QPointF(self._pos)
+
+    def open_bindings(self) -> None:
+        """打开"手势对照表"页面（能看也能改）。已经开着就提到前面。"""
+        from .bindings import BindingsDialog
+        if self._bindings is None:
+            self._bindings = BindingsDialog(self)
+        self._bindings.show()
+        self._bindings.raise_()
+        self._bindings.activateWindow()
+
+    def _ui_open(self) -> bool:
+        """
+        是不是有自绘界面（控制面板 / 对照表）正开着。
+
+        开着的时候一切跟随都要停：面板相对宠物定位、对照表是模态工作流，
+        宠物在用户手底下乱跑，点哪个都点不中。
+        """
+        for w in (self._panel, self._bindings):
+            if w is not None and w.isVisible():
+                return True
+        return False
 
     def _close_panel(self) -> None:
         if self._panel is not None and self._panel.isVisible():
