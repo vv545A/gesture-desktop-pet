@@ -236,7 +236,9 @@ python main.py --face-conf 0.6    # 人脸阈值调高，减少误否决（默�
 ## 用法
 
 ```bash
-cd E:\WorkBuddyProject\hand-control-portable
+git clone https://github.com/vv545A/gesture-desktop-pet.git
+cd gesture-desktop-pet
+setup.bat                        # 首次运行：建 .venv 并装依赖（约 570 MB）
 .venv\Scripts\activate
 
 python main.py --test            # 先跑这个！只识别不执行，安全
