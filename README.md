@@ -3,6 +3,8 @@
 隔空操控电脑：**单手操作窗口**（最大化 / 最小化 / 切换 / 贴边分屏 / 置顶 / 收起全部），
 **双手控制音乐**（播放暂停 / 音量 / 切歌 / 静音）。纯 CPU 实时，不需要训练模型。
 
+[MIT License](LICENSE) · Windows 10/11 · Python 3.10+
+
 <p align="center">
   <img src="pet_poses.png" width="660" alt="桌宠预览：正面 / 走向左 / 走向右 / 悬停进度环">
 </p>
@@ -554,3 +556,17 @@ hand-control/
 - **双手交叉**时位置信号会失效（`auto` 优先位置），需要切 `--hands model`。
 - **手贴着/挡着脸做手势会被忽略**——人脸否决认的是"关键点大部分落在脸上、且比脸小"，这时它和误检没有区别。把手移到脸旁边就行。
 - **窗口操作只作用于前台窗口**，而且不认桌面/任务栏和我们自己的窗口（否则会出现"点了桌宠，手势把桌宠自己缩掉了"）。想操作某个窗口，先用 ✌️ 切过去，或者用鼠标点一下。
+
+## 许可
+
+本项目代码以 **MIT License** 发布，见 [LICENSE](LICENSE)。可以自由使用、修改、分发，商用也行，
+保留版权声明即可。
+
+有两处是别人的东西，别当成我的：
+
+| 内容 | 授权 | 说明 |
+|---|---|---|
+| `pet/assets/*.png` 鲸鱼娘立绘 | MIT（上游） | 来自 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet)，版权归原作者。是 DeepSeek 鲸鱼形象的**二创，非官方**，与 DeepSeek 公司无关——商用前请自行确认形象权 |
+| `models/*.task` / `*.tflite` | Apache-2.0 | MediaPipe 官方模型，Google 发布 |
+
+改形象、换素材的步骤见 [`pet/assets/NOTICE.md`](pet/assets/NOTICE.md)。

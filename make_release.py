@@ -22,7 +22,7 @@ DIST = os.path.join(BASE, "dist")
 INCLUDES = [
     "main.py", "gestures.py", "hand_tracker.py", "actions.py", "face_guard.py",
     "camera.py", "calibrate.py", "requirements.txt", "run.bat", "run_pet.bat",
-    "setup.bat", "README.md", "ARCHITECTURE.md", "START_HERE.txt",
+    "setup.bat", "README.md", "ARCHITECTURE.md", "START_HERE.txt", "LICENSE",
     "pet_poses.png", "pet_ui_panel.png", "pet_dock.png",
     "pet_cursor_follow.png", "pet_bindings.png",
     "models/hand_landmarker.task",
