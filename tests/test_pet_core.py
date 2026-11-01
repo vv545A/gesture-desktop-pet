@@ -5,10 +5,11 @@
 跑法：
     python tests/test_pet_core.py
 
-覆盖三件最容易悄悄坏掉的事：
+覆盖四件最容易悄悄坏掉的事：
     1. 事件总线：跨线程投递、类型过滤、单个订阅者出错不影响别人
-    2. 手势引擎：悬停触发一次 / 松手才能再触发 / 手在动不触发 / 双手序列开关
-    3. 映射与配置：左右手分开映射、pet: 前缀绝不碰系统、配置能存能读
+    2. 手势引擎：单手悬停触发一次 / 松手才能再触发 / 手在动不触发
+    3. 双手：同手势配对才触发音乐、左右不一致什么都不做、捏合保持 = 总开关
+    4. 映射与配置：单手=窗口、双手=音乐、pet: 前缀绝不碰系统、配置能存能读
 
 界面部分不做自动化测试（PyQt6 需要真实桌面），用 `python -m pet --snapshot` 出图人工看。
 """
@@ -41,6 +42,8 @@ BASE = [
     (0.585, 0.62), (0.59, 0.55), (0.59, 0.50), (0.58, 0.47),
 ]
 
+THUMB_TIP, INDEX_TIP = 4, 8
+
 
 def check(name, cond, extra=""):
     PASS.append(bool(cond))
@@ -49,10 +52,13 @@ def check(name, cond, extra=""):
         raise AssertionError(name)
 
 
-def mkhand(dx=0.0, dy=0.0, side="right", gesture="", score=0.9):
+def mkhand(dx=0.0, dy=0.0, side="right", gesture="", score=0.9, pinch=False):
     lm = np.zeros((21, 3), np.float32)
     for i, (x, y) in enumerate(BASE):
         lm[i] = (x + dx, y + dy, 0)
+    if pinch:
+        # 拇指尖贴到食指尖上 -> 几何判据认出 PINCH（手势模型没有这个类别）
+        lm[THUMB_TIP] = lm[INDEX_TIP]
     return Hand(landmarks=lm, score=0.9, aspect=1280 / 720, side=side,
                 model_gesture=gesture, model_score=score)
 
@@ -62,6 +68,11 @@ def fresh_engine(**kw):
     for k, v in kw.items():
         setattr(cfg, k, v)
     return GestureEngine(cfg)
+
+
+def two(g_left, g_right, pinch=False):
+    return [mkhand(dx=-0.25, side="left", gesture=g_left, pinch=pinch),
+            mkhand(dx=0.25, side="right", gesture=g_right, pinch=pinch)]
 
 
 # ---------------------------------------------------------------- 事件总线
@@ -88,76 +99,105 @@ bus.post(HandsSeen(count=2))
 n = bus.drain()
 check("订阅者出错不影响其它订阅者", len(other) == 1 and n == 2, f"(处理 {n} 条)")
 
-# ---------------------------------------------------------------- 手势引擎
-print("== GestureEngine：悬停确认 ==")
+# ---------------------------------------------------------------- 单手（窗口）
+print("== GestureEngine：单手悬停确认 ==")
 eng = fresh_engine()
-h = mkhand(gesture="VICTORY")
-t, fires = 0.0, 0
+t, fires = 0.0, []
 for _ in range(30):                      # 1 秒，远超过 0.5 秒悬停
     out = eng.update([mkhand(gesture="VICTORY")], t)
-    fires += len(out.fired)
+    fires += out.fired
     t += DT
-check("举着 1 秒只触发一次", fires == 1, f"({fires} 次)")
+check("举着 1 秒只触发一次", len(fires) == 1, f"({len(fires)} 次)")
+check("单手触发带手别", len(fires) == 1 and fires[0].side == "right")
 
 for _ in range(15):                      # 离开画面 0.5s > grace 0.35s，才算真的松手
     eng.update([], t)
     t += DT
-fires = 0
+fires = []
 for _ in range(30):
     out = eng.update([mkhand(gesture="VICTORY")], t)
-    fires += len(out.fired)
+    fires += out.fired
     t += DT
-check("松手后可以再次触发", fires == 1, f"({fires} 次)")
+check("松手后可以再次触发", len(fires) == 1, f"({len(fires)} 次)")
 
 print("== GestureEngine：手在动不触发 ==")
 eng2 = fresh_engine()
-t, fires = 0.0, 0
+t, n = 0.0, 0
 for i in range(45):
     out = eng2.update([mkhand(dx=0.004 * i, gesture="VICTORY")], t)
-    fires += len(out.fired)
+    n += len(out.fired)
     t += DT
-check("持续横移 1.5 秒不触发", fires == 0, f"({fires} 次)")
+check("持续横移 1.5 秒不触发", n == 0, f"({n} 次)")
 
-print("== GestureEngine：双手总开关 ==")
+# ---------------------------------------------------------------- 双手（音乐）
+print("== GestureEngine：双手同手势 -> 音乐 ==")
 eng3 = fresh_engine()
-t = 0.0
+t, fires = 0.0, []
+for _ in range(30):
+    out = eng3.update(two("VICTORY", "VICTORY"), t)
+    fires += out.fired
+    t += DT
+check("双手剪刀手触发一次", len(fires) == 1, f"({len(fires)} 次)")
+check("双手触发 side=both", fires and fires[0].side == "both", f"({fires[0].side if fires else '-'})")
+check("双手触发的手势是 VICTORY", fires and fires[0].gesture == "VICTORY")
 
-
-def two(g_left, g_right):
-    return [mkhand(dx=-0.25, side="left", gesture=g_left),
-            mkhand(dx=0.25, side="right", gesture=g_right)]
-
-
-toggled = None
-seq = [("FIST", "FIST"), ("OPEN_PALM", "OPEN_PALM"),
-       ("FIST", "FIST"), ("OPEN_PALM", "OPEN_PALM")]
-for g in seq:
-    for _ in range(5):                   # 每步停留 ~0.17s > dwell 0.1s
-        out = eng3.update(two(*g), t)
-        if out.toggled is not None:
-            toggled = out.toggled
-        t += DT
-check("✊✋✊✋ 两遍 -> 关闭控制", toggled is False, f"(toggled={toggled})")
-
-print("== GestureEngine：双手时不误发单手指令 ==")
+print("== GestureEngine：双手不一致什么都不做 ==")
 eng4 = fresh_engine()
-t, fires = 0.0, 0
+t, n = 0.0, 0
 for _ in range(40):
     out = eng4.update(two("VICTORY", "OPEN_PALM"), t)
-    fires += len(out.fired)
+    n += len(out.fired)
     t += DT
-check("双手在场抑制单手指令", fires == 0, f"({fires} 次)")
+check("左右手势不同 -> 不触发", n == 0, f"({n} 次)")
+
+print("== GestureEngine：双手在场抑制单手指令 ==")
+eng5 = fresh_engine()
+t, n = 0.0, 0
+for _ in range(40):
+    out = eng5.update(two("VICTORY", "OPEN_PALM"), t)
+    n += len(out.fired)
+    t += DT
+check("双手在场抑制单手指令", n == 0, f"({n} 次)")
+
+print("== GestureEngine：双手捏合保持 = 总开关 ==")
+eng6 = fresh_engine()
+t, toggled = 0.0, None
+for _ in range(40):                      # 40 帧 ≈ 1.33s > toggle_hold 1.0s
+    out = eng6.update(two("PINCH", "PINCH", pinch=True), t)
+    if out.toggled is not None:
+        toggled = out.toggled
+    t += DT
+check("双手捏合保持 -> 关闭控制", toggled is False, f"(toggled={toggled})")
+check("捏合瞬间不当作音乐手势",
+      mapping.resolve("both", "PINCH") is None)
 
 # ---------------------------------------------------------------- 映射
-print("== 映射表 ==")
+print("== 映射表：单手=窗口 ==")
 r = mapping.resolve("right", "POINT")
 l = mapping.resolve("left", "POINT")
-check("右手食指下一页", r is not None and r.key == "page_down", f"({r.key})")
-check("左手食指上一页", l is not None and l.key == "page_up", f"({l.key})")
+check("右手食指 -> 贴右半屏", r is not None and r.key == "win_snap_right", f"({r.key})")
+check("左手食指 -> 贴左半屏", l is not None and l.key == "win_snap_left", f"({l.key})")
+mx = mapping.resolve("right", "OPEN_PALM")
+check("张开手掌 -> 最大化/还原", mx is not None and mx.key == "win_max", f"({mx.key})")
+fist = mapping.resolve("left", "FIST")
+check("握拳 -> 最小化", fist is not None and fist.key == "win_min", f"({fist.key})")
 pat = mapping.resolve("right", "PINCH")
 check("单手捏合只摸宠物（不碰系统）", pat is not None and pat.key.startswith("pet:"),
       f"({pat.key})")
+
+print("== 映射表：双手=音乐 ==")
+pp = mapping.resolve("both", "OPEN_PALM")
+check("双手张开 -> 播放/暂停", pp is not None and pp.key == "play_pause", f"({pp.key})")
+nt = mapping.resolve("both", "VICTORY")
+check("双手剪刀手 -> 下一首", nt is not None and nt.key == "next_track", f"({nt.key})")
 check("未映射的手势返回 None", mapping.resolve("right", "UNKNOWN") is None)
+
+print("== 动态台词：动作结果决定说什么 ==")
+b_max = mapping.window_bubble("win_max", "max")
+b_res = mapping.window_bubble("win_max", "restore")
+b_none = mapping.window_bubble("win_max", "no_window")
+check("最大化与还原台词不同", b_max and b_res and b_max != b_res, f"({b_max} / {b_res})")
+check("没窗口时给出提示", "窗口" in b_none, f"({b_none})")
 
 # ---------------------------------------------------------------- 配置
 print("== 配置读写 ==")
@@ -166,6 +206,7 @@ cfg = Config(pet_name="测试团子", hold=0.42, follow="cursor")
 cfg.save(cfg_path)
 back = Config.load(cfg_path)
 check("round-trip 保留字段", back.pet_name == "测试团子" and abs(back.hold - 0.42) < 1e-9)
+check("双手参数有默认值", back.pair_hold > 0 and back.toggle_hold > 0)
 back.override(pet_name="覆盖后", follow=None)
 check("override 跳过 None", back.pet_name == "覆盖后" and back.follow == "cursor")
 try:
