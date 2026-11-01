@@ -28,6 +28,7 @@ from PyQt6.QtGui import (QCursor, QColor, QGuiApplication, QPainter,
                          QPen, QPolygonF)
 from PyQt6.QtWidgets import QWidget
 
+from ..core import windowinfo
 from ..core.bus import EventBus
 from ..core.config import Config
 from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
@@ -99,6 +100,13 @@ class PetWindow(QWidget):
         self._last_hand = time.monotonic()  # 用"现在"初始化：刚启动不该立刻困成待机
         self._hand_pt: Optional[tuple] = None
 
+        # ---- 吸附到窗口（follow == "window"） ----
+        self._dock: Optional[windowinfo.WindowInfo] = None
+        self._dock_side = "right"          # 宠物站在窗口的哪一侧（right/left）
+        self._dock_seen = 0.0              # 最后一次确认目标窗口的时刻
+        self._dock_next = 0.0              # 下次轮询的时刻（限流用）
+        self._dock_poll = 0.12             # 轮询间隔：窗口被拖动时也能跟上
+
         # ---- 表现状态 ----
         self._pose = PetPose()
         self._look = (0.0, 0.0)
@@ -168,6 +176,21 @@ class PetWindow(QWidget):
 
     def _screen_rect(self) -> QRectF:
         scr = QGuiApplication.primaryScreen()
+        g = scr.availableGeometry() if scr else None
+        if g is None:
+            return QRectF(0, 0, 1920, 1080)
+        return QRectF(g.x(), g.y(), g.width(), g.height())
+
+    def _screen_rect_for(self, x: float, y: float) -> QRectF:
+        """
+        某个点落在哪块屏幕上，就返回那块屏幕的可用区域。
+
+        多显示器时不能一律用 primaryScreen：目标窗口在副屏、宠物却按主屏
+        去夹坐标，会被拽回主屏，等于吸附失败。
+        """
+        scr = QGuiApplication.screenAt(QPoint(int(x), int(y)))
+        if scr is None:
+            scr = QGuiApplication.primaryScreen()
         g = scr.availableGeometry() if scr else None
         if g is None:
             return QRectF(0, 0, 1920, 1080)
@@ -307,6 +330,58 @@ class PetWindow(QWidget):
         y = _clamp(c.y() - self.win_h * 0.85, r.top(), r.bottom() - self.win_h)
         self._target = QPointF(x, y)
 
+    # ---------------------------------------------------------------- 吸附窗口
+    def _follow_window(self, now: float) -> None:
+        """
+        贴着"手势要操作的那个窗口"站着。
+
+        取数口径和 `actions.target_window()` 完全一致（同一个前台窗口、同样排除
+        桌面/任务栏/自己进程），所以宠物贴着谁，手势就动谁 —— 这正是这个功能
+        要解决的问题：不用事后猜刚才那一下动了哪个窗口。
+
+        三个"别乱动"的时刻
+            * 用户刚把宠物拖走（_park_until）：尊重"我就要放这儿"。
+            * 正在拖 / 面板开着：手在宠物身上，脚下换目标会让人点错。
+            * 前台暂时变成桌宠自己：读不到目标时先撑 1.5 秒，别一丢就跳回角落。
+        """
+        if now < self._park_until or self._dragging:
+            return
+        if self._panel is not None and self._panel.isVisible():
+            return
+        if now < self._dock_next:
+            return
+        self._dock_next = now + self._dock_poll
+
+        scr = QGuiApplication.primaryScreen()
+        info = windowinfo.query(self_hwnd=int(self.winId()),
+                                dpr=scr.devicePixelRatio() if scr else 1.0)
+
+        if info is None:
+            if self._dock is not None and now - self._dock_seen < 1.5:
+                return                      # 只是短暂读不到，原地待着
+            if self._dock is not None:
+                self._dock = None
+                self._place_home()
+            return
+
+        self._dock = info
+        self._dock_seen = now
+
+        if not info.dockable:
+            # 最小化/最大化/全屏：没有边可贴，守在角落，等窗口恢复再贴回去
+            self._place_home()
+            return
+
+        area = self._screen_rect_for(*info.center)
+        x, y, side = windowinfo.dock_xy(
+            info, self.win_w, self.win_h, self.pet_cx, self.pet_cy,
+            (area.left(), area.top(), area.right(), area.bottom()),
+            body_w=self.body_w, overlap=self.cfg.dock_overlap,
+            prefer=self.cfg.dock_side,
+            pad=self.cfg.dock_pad, y_ratio=self.cfg.dock_y)
+        self._dock_side = side
+        self._target = QPointF(x, y)
+
     # ---------------------------------------------------------------- 每帧
     def _tick(self) -> None:
         now = time.monotonic()
@@ -316,12 +391,17 @@ class PetWindow(QWidget):
 
         # 1) 一段时间没看到手 -> 回角落待机。
         #    "没人的时候别赖在屏幕中间"是桌宠的基本礼貌。
+        #    吸附模式下不回家：它得守在操作目标旁边，位置由 _follow_window 决定。
         quiet = now - self._last_hand
-        if quiet > self.cfg.idle_after and not self._dragging and now > self._park_until:
+        if quiet > self.cfg.idle_after:
             if self._mood not in ("sleepy", "shy"):
                 self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
-            self._place_home(immediate=False)
+            if (self.cfg.follow != "window" and not self._dragging
+                    and now > self._park_until):
+                self._place_home(immediate=False)
 
+        if self.cfg.follow == "window":
+            self._follow_window(now)
         self._follow_cursor()
 
         # 2) 平滑移动：指数趋近，和帧率无关（掉帧只会变慢，不会瞬移）
@@ -341,6 +421,13 @@ class PetWindow(QWidget):
             self._facing_since = now
         if self.cfg.sprite_walk and now - self._facing_since > 0.25:
             self._facing = raw
+
+        # 2c) 吸附时直接面向窗口，不看速度：站在窗口右边就朝左看。
+        #     "回头看窗口"这一下比任何标签都直观，用户扫一眼就知道它在盯着谁。
+        if (self.cfg.follow == "window" and self.cfg.sprite_walk
+                and self._dock is not None and self._dock.dockable
+                and not self._dragging and abs(vx) < 40):
+            self._facing = -1 if self._dock_side == "right" else 1
 
         # 3) 情绪超时后退回 idle
         if now > self._mood_until and self._mood not in ("idle", "sleepy"):
@@ -393,6 +480,12 @@ class PetWindow(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
+        # 吸附时先把"窗口边框"这条线画在下面：立绘会挡住它，
+        # 看上去是边界从宠物身后延伸出来，而不是一道线横在脸上。
+        if (self.cfg.follow == "window" and self._dock is not None
+                and self._dock.dockable):
+            self._paint_dock_seam(p)
+
         if self._sprite is not None:
             # 贴图版没有独立的影子和柔光层，这里补上，构图才和矢量版一致
             draw_shadow(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h)
@@ -414,6 +507,10 @@ class PetWindow(QWidget):
             top = max(2.0, self.pet_cy - self.body_h * 0.50 - 78)
             rect = QRectF(8, top, self.win_w - 16, 66)
             draw_bubble(p, rect, self._bubble, self._bubble_alpha, self._font)
+        elif (self.cfg.follow == "window" and self._dock is not None
+              and self._dock.dockable):
+            # 说话的时候优先让气泡，标签等说完再回来
+            self._paint_dock_tag(p)
 
         # 关闭状态下画一条淡淡的提示，免得用户以为程序挂了。
         # 两种"不在干活"要区分开：手势被关掉（要告诉用户怎么开回来）和
@@ -432,6 +529,56 @@ class PetWindow(QWidget):
         # 右上角的关闭键要画在最上层：气泡/水花都不该盖住它
         self._paint_power_button(p)
         p.end()
+
+    def _paint_dock_tag(self, p: QPainter) -> None:
+        """
+        吸附时头顶的小标签：窗口标题。
+
+        为什么必须有标签：吸附只说明"我贴着某个东西"，说明不了贴的是谁。
+        窗口标题一摆出来，"现在手势动的是这个窗口"就不用猜了 —— 这正是用户
+        提这个需求的理由。
+        """
+        info = self._dock
+        if info is None:
+            return
+        accent = QColor(77, 107, 254)
+
+        # 标签：夹在左边和右上角关闭键之间，宽度不够就不画（宁缺勿糊）
+        x0 = 7.0
+        x1 = self.win_w - self._btn_r * 2 - 12
+        if x1 - x0 < 44:
+            return
+        rect = QRectF(x0, 4.0, x1 - x0, 18.0)
+        p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 95), 1.0))
+        p.setBrush(QColor(255, 255, 255, 210))
+        p.drawRoundedRect(rect, 9, 9)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 235))
+        p.drawEllipse(QPointF(x0 + 9.0, rect.center().y()), 3.0, 3.0)
+        p.setPen(QColor(46, 60, 92))
+        p.setFont(ui_font(8))
+        p.drawText(rect.adjusted(16, 0, -6, 0),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   windowinfo.short_title(info.title, self.cfg.dock_title_len))
+
+    def _paint_dock_seam(self, p: QPainter) -> None:
+        """
+        一条沿着窗口边框的细线，**画在立绘之前**，所以会被身体挡住。
+
+        这样看上去是"窗口的边一直延伸到宠物身后"，而不是一道划痕从脸上划过。
+        只画在宠物这一侧，长度略超身体上下沿，断开的两头刚好从身侧露出来。
+        """
+        if not self.cfg.dock_side:
+            return
+        accent = QColor(77, 107, 254)
+        # 边线的本地 x：身体往窗口外让了多少，边线就往里退多少
+        reach = self.body_w * (0.5 - _clamp(self.cfg.dock_overlap, 0.0, 0.5))
+        seam_x = (self.pet_cx - self.cfg.dock_pad - reach if self._dock_side == "right"
+                  else self.pet_cx + self.cfg.dock_pad + reach)
+        h = self.body_h * 1.36
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 115))
+        p.drawRoundedRect(QRectF(seam_x - 1.3, self.pet_cy - h / 2, 2.6, h), 1.3, 1.3)
 
     def _paint_power_button(self, p: QPainter) -> None:
         """

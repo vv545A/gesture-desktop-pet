@@ -39,7 +39,7 @@ DANGER = QColor(214, 78, 92)
 
 MARGIN = 9          # 给阴影留的边
 PAD = 12
-WIDTH = 212
+WIDTH = 236         # 四段式跟随方式要放得下"跟鼠标"三个字，比三段式宽一圈
 
 
 class ControlPanel(QWidget):
@@ -95,7 +95,8 @@ class ControlPanel(QWidget):
         self._height = int(y + PAD + MARGIN - 6)
 
     def _seg_rects(self) -> List[Tuple[str, QRectF]]:
-        keys = (("hand", "跟手"), ("cursor", "跟鼠标"), ("corner", "守角落"))
+        keys = (("hand", "跟手"), ("cursor", "跟鼠标"),
+                ("window", "吸附"), ("corner", "角落"))
         gap = 5
         seg_w = (self._seg.width() - gap * (len(keys) - 1)) / len(keys)
         out = []
@@ -193,7 +194,8 @@ class ControlPanel(QWidget):
             p.drawRoundedRect(rect, 7, 7)
             p.setPen(QColor(255, 255, 255) if active else TEXT)
             p.setFont(self._font_small)
-            label = {"hand": "跟手", "cursor": "跟鼠标", "corner": "守角落"}[key]
+            label = {"hand": "跟手", "cursor": "跟鼠标",
+                     "window": "吸附", "corner": "角落"}[key]
             p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), label)
 
     def _paint_button(self, p: QPainter, key: str, rect: QRectF) -> None:
@@ -259,9 +261,10 @@ class ControlPanel(QWidget):
                 # 穿透一开就点不到桌宠了，面板必须马上收起来，并用托盘提示
                 self.close()
                 self.bus.post(PetSay(text="我先隐形啦，右键托盘图标能叫我回来", mood="shy"))
-        elif key in ("hand", "cursor", "corner"):
+        elif key in ("hand", "cursor", "window", "corner"):
             self.cfg.follow = key
             say = {"hand": "好，我跟着你的手", "cursor": "跟着鼠标走～",
+                   "window": "好，我贴着窗口边站，你按哪个窗口我就站哪个边上",
                    "corner": "我在这儿待着"}.get(key, "")
             self.bus.post(PetSay(text=say, mood="happy"))
         elif key == "help":

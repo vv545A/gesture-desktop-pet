@@ -68,13 +68,22 @@ class Config:
     # ---------------- 桌宠 ----------------
     pet_name: str = "小鲸"
     pet_scale: float = 1.0
-    follow: str = "hand"             # hand / cursor / corner
+    follow: str = "hand"             # hand / cursor / window / corner
     follow_gain: float = 1.6         # 手掌位移 -> 屏幕位移的放大倍数
     always_on_top: bool = True
     click_through: bool = False      # 全屏穿透（桌宠不挡点击）
     home_corner: str = "br"          # br / bl / tr / tl
     idle_after: float = 5.0          # 多久没看到手就回角落
     bubble_ms: int = 2200
+
+    # ---- 吸附到窗口（follow == "window"）----
+    # 贴着"手势要操作的那个窗口"站，用窗口标题当标签 —— 一眼看出在操作谁。
+    # 只在窗口"正常大小"时贴：最小化没有边，最大化/全屏四条边都在屏幕外。
+    dock_pad: float = 4.0            # 身体压出窗口边界多少像素
+    dock_overlap: float = 0.16       # 身体压进窗口的比例（16% 体宽，不挡内容又能看出在贴边）
+    dock_y: float = 0.28             # 竖直锚点：0.28 = 窗口高度的 28% 处（避开标题栏）
+    dock_side: str = "right"         # 优先站窗口右边（右边放不下会自动翻到左边）
+    dock_title_len: int = 12         # 标签里窗口标题最多几个字
 
     # ---------------- 调试 ----------------
     preview: bool = False            # 预留：摄像头预览窗

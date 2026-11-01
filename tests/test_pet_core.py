@@ -199,6 +199,57 @@ b_none = mapping.window_bubble("win_max", "no_window")
 check("最大化与还原台词不同", b_max and b_res and b_max != b_res, f"({b_max} / {b_res})")
 check("没窗口时给出提示", "窗口" in b_none, f"({b_none})")
 
+# ---------------------------------------------------------------- 吸附到窗口
+print("== 吸附：哪些窗口能贴、贴在哪 ==")
+from pet.core import windowinfo                                   # noqa: E402
+from pet.core.windowinfo import WindowInfo, dock_xy, short_title  # noqa: E402
+
+# 桌宠尺寸取实测值：scale=1 时窗口 222x302，身体中心 (111, 202)，体宽 118.6
+PW, PH, PCX, PCY, BW = 222.0, 302.0, 111.0, 202.0, 118.6
+SCREEN = (0.0, 0.0, 1920.0, 1040.0)
+PAD, OVERLAP = 4.0, 0.16
+REACH = BW * (0.5 - OVERLAP)          # 身体往外让出的距离 ≈ 40.3
+
+win = WindowInfo(1, "Chrome - 测试", 300, 100, 1000, 700, "normal")
+check("窗口信息：宽高与中心", (win.width, win.height) == (700, 600)
+      and win.center == (650.0, 400.0))
+check("正常窗口可以贴", win.dockable)
+for st in ("minimized", "maximized", "fullscreen"):
+    check(f"{st} 不贴（没边/会挡内容）", not WindowInfo(1, "x", 0, 0, 1920, 1040, st).dockable)
+
+x, y, side = dock_xy(win, PW, PH, PCX, PCY, SCREEN, body_w=BW,
+                     pad=PAD, y_ratio=0.28)
+check("默认贴窗口右边", side == "right", f"({side})")
+check("右边：身体压住边界一点点",
+      abs((x + PCX) - (win.right + PAD + REACH)) < 0.01, f"(x={x:.1f})")
+check("竖直：身体中心在窗口高度 28% 处",
+      abs(y - (win.top + win.height * 0.28 - PCY)) < 0.01, f"(y={y:.1f})")
+
+x2, y2, side2 = dock_xy(WindowInfo(2, "x", 800, 100, 1912, 700, "normal"),
+                        PW, PH, PCX, PCY, SCREEN, body_w=BW, pad=PAD)
+check("窗口贴屏幕右缘 -> 自动翻到左边", side2 == "left"
+      and x2 >= SCREEN[0] and x2 + PW <= SCREEN[2], f"({side2}, x={x2:.1f})")
+
+x3, _, side3 = dock_xy(win, PW, PH, PCX, PCY, SCREEN, prefer="left")
+check("可以指定优先站左边", side3 == "left", f"({side3})")
+
+_, y4, _ = dock_xy(WindowInfo(3, "x", 300, 100, 1000, 390, "normal"),
+                   PW, PH, PCX, PCY, (0.0, 0.0, 1920.0, 400.0))
+check("屏幕矮时竖直夹在屏幕内", 0.0 <= y4 and y4 + PH <= 400.0, f"(y={y4:.1f})")
+
+xa, _, _ = dock_xy(win, PW, PH, PCX, PCY, SCREEN)
+xb, _, _ = dock_xy(win, PW, PH, PCX, PCY, SCREEN, body_w=BW)
+check("没有立绘信息时退化成身体贴边（不压窗口）", xb > xa, f"({xa:.1f} -> {xb:.1f})")
+
+check("标题截断加省略号", short_title("Chrome - 隔空手势桌宠 - GitHub", 12).endswith("…")
+      and len(short_title("Chrome - 隔空手势桌宠 - GitHub", 12)) <= 12)
+check("空标题有兜底", short_title("", 12) == "窗口")
+
+real = windowinfo.query()
+check("查前台窗口不抛异常", real is None or (real.right > real.left and real.state in
+      ("normal", "maximized", "minimized", "fullscreen")),
+      f"({real.state if real else 'None'})")
+
 # ---------------------------------------------------------------- 配置
 print("== 配置读写 ==")
 cfg_path = os.path.join(tempfile.gettempdir(), "pet_cfg_test.json")

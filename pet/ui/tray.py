@@ -68,6 +68,7 @@ class PetTray:
         group.setExclusive(True)
         self._follow_actions = {}
         for key, label in (("hand", "跟着手掌"), ("cursor", "跟着鼠标"),
+                           ("window", "吸附到窗口（跟着前台窗口）"),
                            ("corner", "守在角落")):
             a = QAction(label, follow, checkable=True)
             a.setChecked(window.cfg.follow == key)
@@ -135,7 +136,7 @@ class PetTray:
     def _set_follow(self, key: str) -> None:
         self.window.cfg.follow = key
         label = {"hand": "好，我跟着你的手", "cursor": "跟着鼠标走～",
-                 "corner": "我在这儿待着"}.get(key, "")
+                 "window": "好，我贴着窗口边站", "corner": "我在这儿待着"}.get(key, "")
         self.bus.post(PetSay(text=label, mood="happy"))
 
     def _show_help(self) -> None:

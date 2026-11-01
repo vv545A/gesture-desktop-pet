@@ -39,8 +39,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--config", default=None, help="配置文件路径（默认 pet_config.json）")
     p.add_argument("--cam", type=int, default=None, help="摄像头序号")
     p.add_argument("--scale", dest="pet_scale", type=float, default=None, help="桌宠大小倍数")
-    p.add_argument("--follow", choices=["hand", "cursor", "corner"], default=None,
-                   help="跟随方式：手掌 / 鼠标 / 守在角落")
+    p.add_argument("--follow", choices=["hand", "cursor", "window", "corner"],
+                   default=None,
+                   help="跟随方式：手掌 / 鼠标 / 吸附到前台窗口 / 守在角落")
     p.add_argument("--gain", dest="follow_gain", type=float, default=None,
                    help="手掌跟随增益（默认 1.6，越大越灵敏）")
     p.add_argument("--home", dest="home_corner", choices=["br", "bl", "tr", "tl"],
