@@ -559,14 +559,17 @@ hand-control/
 
 ## 许可
 
-本项目代码以 **MIT License** 发布，见 [LICENSE](LICENSE)。可以自由使用、修改、分发，商用也行，
-保留版权声明即可。
+本项目**代码**以 **MIT License** 发布，见 [LICENSE](LICENSE)。可以自由使用、修改、分发，
+商用也行，保留版权声明即可。
 
-有两处是别人的东西，别当成我的：
+从别处来的东西版权归各自作者，清单在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：
 
 | 内容 | 授权 | 说明 |
 |---|---|---|
 | `pet/assets/*.png` 鲸鱼娘立绘 | MIT（上游） | 来自 [1190fasheqi/dafeiyu-pet](https://github.com/1190fasheqi/dafeiyu-pet)，版权归原作者。是 DeepSeek 鲸鱼形象的**二创，非官方**，与 DeepSeek 公司无关——商用前请自行确认形象权 |
 | `models/*.task` / `*.tflite` | Apache-2.0 | MediaPipe 官方模型，Google 发布 |
+
+> 想**闭源分发**的话注意一件事：PyQt6 是 GPL-3.0 / 商业双许可。源码公开、自己用、
+> 公司内部用都没问题；要闭源卖就得换成 PySide6（LGPL）或买商业许可。
 
 改形象、换素材的步骤见 [`pet/assets/NOTICE.md`](pet/assets/NOTICE.md)。
