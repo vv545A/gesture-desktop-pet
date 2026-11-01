@@ -24,6 +24,7 @@ INCLUDES = [
     "camera.py", "calibrate.py", "requirements.txt", "run.bat", "run_pet.bat",
     "setup.bat", "README.md", "ARCHITECTURE.md", "START_HERE.txt",
     "pet_poses.png", "pet_ui_panel.png", "pet_dock.png",
+    "pet_cursor_follow.png", "pet_bindings.png",
     "models/hand_landmarker.task",
     "models/gesture_recognizer.task",
     "models/blaze_face_short_range.tflite",

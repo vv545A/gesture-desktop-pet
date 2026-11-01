@@ -265,4 +265,49 @@ try:
 except OSError:
     pass
 
+# ---------------------------------------------------------------- 手势绑定
+print("== 手势绑定（对照表页面）==")
+mapping.apply_bindings({})
+check("默认 右手✋ = 最大化", mapping.resolve("right", "OPEN_PALM").key == "win_max")
+check("默认 双手✊ = 静音", mapping.resolve("both", "FIST").key == "mute")
+
+mapping.apply_bindings({"right:OPEN_PALM": "win_min", "both:FIST": "play_pause"})
+check("改绑 右手✋", mapping.resolve("right", "OPEN_PALM").key == "win_min")
+check("改绑 双手✊", mapping.resolve("both", "FIST").key == "play_pause")
+check("没改的 左手✋ 仍是默认", mapping.resolve("left", "OPEN_PALM").key == "win_max")
+check("台词跟着动作走", "收起来" in mapping.resolve("right", "OPEN_PALM").bubble)
+
+# 左手有一条"没有就用右手"的 fallback，所以取消绑定必须能被真正关掉
+mapping.apply_bindings({"left:VICTORY": ""})
+check("取消绑定不会被右手继承", mapping.resolve("left", "VICTORY") is None)
+check("取消后右手✌️ 照旧", mapping.resolve("right", "VICTORY").key == "alt_tab")
+
+mapping.apply_bindings({"right:FIST": "根本没有这个动作"})
+check("动作名拼错时保持默认", mapping.resolve("right", "FIST").key == "win_min")
+
+mapping.apply_bindings({"both:FIST": ""})
+check("双手也能取消", mapping.resolve("both", "FIST") is None)
+
+mapping.apply_bindings({})
+check("恢复默认", mapping.resolve("right", "OPEN_PALM").key == "win_max"
+      and mapping.resolve("both", "FIST").key == "mute")
+
+default_map = mapping.default_bindings()
+check("默认共 20 条（14 单手 + 6 双手）", len(default_map) == 20)
+check("默认动作都在目录里", all(v in mapping.ACTION_CATALOG for v in default_map.values()))
+check("目录带中文名", mapping.describe_action("win_max") == "最大化 / 还原"
+      and mapping.describe_action("") == "不绑定")
+
+bind_path = os.path.join(tempfile.gettempdir(), "pet_bind_test.json")
+Config(bindings={"right:OPEN_PALM": "win_min"}).save(bind_path)
+check("bindings 能存能读",
+      Config.load(bind_path).bindings.get("right:OPEN_PALM") == "win_min")
+try:
+    os.remove(bind_path)
+except OSError:
+    pass
+
+check("跟鼠标有安全距离参数", Config().cursor_trail >= 80)
+check("吸附默认正面朝前", Config().dock_face_front is True)
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")
