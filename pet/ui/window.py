@@ -52,13 +52,19 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 class PetWindow(QWidget):
-    def __init__(self, bus: EventBus, cfg: Config, control=None) -> None:
+    def __init__(self, bus: EventBus, cfg: Config, control=None,
+                 bond=None) -> None:
         super().__init__()
         self.cfg = cfg
         self.bus = bus
         # ControlCenter：关手势识别、退出程序这类"要动全局状态"的事都通过它
         # 走，窗口自己不改引擎/摄像头的状态（见 core/control.py 的注释）
         self.control = control
+
+        # 亲密度存档，可以为 None（headless / 单元测试 / 目录不可写）
+        self.bond = bond
+        self._bond_dirty = False
+        self._bond_saved = 0.0
         self._enabled = bool(getattr(control, "enabled", True))
         self.scale = max(0.6, min(2.0, cfg.pet_scale))
         # 有立绘就用立绘，没有就退回程序化矢量版（两套共用同一套姿态参数）
@@ -303,6 +309,7 @@ class PetWindow(QWidget):
 
         if ev.ok:
             self._apply_pet_intent(ev.intent)
+            self._bond_add("gesture")
 
     def _apply_pet_intent(self, key: str) -> None:
         """
@@ -392,6 +399,7 @@ class PetWindow(QWidget):
                 self.say(f"{ev.player} vs {ev.pet}，我赢咯　{score}", "proud")
             else:
                 self.say(f"都是{ev.player}，平局　{score}", "calm")
+            self._bond_add("game")
 
     def _on_presence(self, ev: Event) -> None:
         """
@@ -415,7 +423,12 @@ class PetWindow(QWidget):
 
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
-        self.say("摄像头好啦，把手抬起来试试～", "happy")
+        # 熟了就换个招呼：这是"记得你"最便宜也最有效的表达
+        greet = self.bond.bond.greeting if self.bond is not None else ""
+        if greet and greet != "……":
+            self.say(f"{greet} 摄像头好啦～", "happy")
+        else:
+            self.say("摄像头好啦，把手抬起来试试～", "happy")
 
     def _on_failed(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionFailed)
@@ -436,6 +449,24 @@ class PetWindow(QWidget):
         """被点/被摸：这是唯一不需要手势也能建立的"关系"。"""
         self.say("嘿嘿…再摸一下", "shy")
         self._pose.squash = -0.25
+        self._bond_add("click")
+
+    def _bond_add(self, kind: str) -> None:
+        """
+        记一次互动。跨过等级门槛时庆祝一下。
+
+        故意把 bond 做成可空的：单元测试和 headless 模式不该为了加个分
+        去准备一个可写目录。没有存档就当作"不记账"，功能照常。
+        """
+        if self.bond is None:
+            return
+        try:
+            leveled_up = self.bond.add(kind)
+            self._bond_dirty = True
+            if leveled_up:
+                self.say(f"我们更熟了——{self.bond.bond.level_name}", "proud")
+        except Exception:
+            pass                        # 记账失败不该影响正在进行的互动
 
     # ---------------------------------------------------------------- 跟随
     def _follow_hand(self, pt: tuple) -> None:
@@ -499,6 +530,8 @@ class PetWindow(QWidget):
         if self._petting and not self._pet_said and now - self._pet_since > 3.5:
             self._pet_said = True
             self.say("嘿嘿…好舒服", "shy")
+            # 摸着摸着加分（权重比手势高：这是"花时间陪着"，不是"下指令"）
+            self._bond_add("pet")
 
     def _cursor_on_pet(self, c: Optional[QPoint] = None) -> bool:
         """指针是不是正压在宠物身上（身体矩形 + 一圈余量）。"""
@@ -639,6 +672,14 @@ class PetWindow(QWidget):
         dt = _clamp(now - self._last_tick, 0.001, 0.1)
         self._last_tick = now
         self._phase = now
+
+        # 亲密度定期落盘：30 秒一次。每次互动都写磁盘太重，
+        # 只在内存里累加、退出时再补一次，掉电最多丢半分钟。
+        if self._bond_dirty and now - self._bond_saved > 30.0:
+            self._bond_saved = now
+            self._bond_dirty = False
+            if self.bond is not None:
+                self.bond.save()
 
         # 1) 一段时间没看到手 -> 回角落待机。
         #    "没人的时候别赖在屏幕中间"是桌宠的基本礼貌。

@@ -42,7 +42,11 @@ class PetTray:
         sp = SpriteSet.from_config(window.cfg)
         icon = QIcon(sp.head_icon(64) if sp is not None else tray_icon(64))
         self.tray = QSystemTrayIcon(icon, app)
-        self.tray.setToolTip(f"{window.cfg.pet_name} · 隔空手势桌宠")
+        tip = f"{window.cfg.pet_name} · 隔空手势桌宠"
+        if getattr(window, "bond", None) is not None:
+            # 托盘 tooltip 是唯一"不打扰、又能随时看到关系进度"的地方
+            tip += f"\n{window.bond.summary()}"
+        self.tray.setToolTip(tip)
 
         menu = QMenu()
 

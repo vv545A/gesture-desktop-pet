@@ -18,6 +18,7 @@
 
 import os
 import sys
+import tempfile
 import time
 
 # 必须在导入 QtWidgets 之前设，否则会尝试连真实显示服务
@@ -44,7 +45,7 @@ def check(name: str, cond: bool) -> None:
         raise AssertionError(name)
 
 
-def make_window() -> PetWindow:
+def make_window(bond=None) -> PetWindow:
     """最小可用窗口：不用贴图（免得依赖 assets），但走完整的真实构造路径。"""
     app = QApplication.instance() or QApplication([])
     cfg = Config()
@@ -52,7 +53,7 @@ def make_window() -> PetWindow:
     cfg.sprite_side = ""
     cfg.click_through = False
     bus = EventBus()
-    win = PetWindow(bus, cfg)
+    win = PetWindow(bus, cfg, bond=bond)
     win._asleep = False
     return win
 
@@ -168,5 +169,30 @@ win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
 check("第一次被摸会应一声", win._pet_said is False)
 win._update_petting(104.0, hands_at(0.1))
 check("摸够 3.5 秒说第二句", win._pet_said is True)
+
+print("== 亲密度接入 ==")
+from pet.core.bond import Bond, BondTracker                      # noqa: E402
+
+bond_path = os.path.join(tempfile.mkdtemp(prefix="bondst_"), "bond.json")
+bt = BondTracker(bond_path, Bond())
+win = make_window(bond=bt)
+
+before = win.bond.bond.points
+fire(win, "pet:dance")
+check("动作成功会加分", win.bond.bond.points > before)
+check("加了分标记为待保存", win._bond_dirty is True)
+check("互动次数也记上了", win.bond.bond.interactions == 1)
+
+# 跨过门槛要庆祝：这是"关系在推进"唯一能被感知到的反馈
+bt.bond.points = 29.5
+win.bond.bond.points = 29.5
+fire(win, "pet:pat")
+check("跨门槛后等级变成熟悉", win.bond.bond.level_name == "熟悉")
+check("升级时切到得意表情", win._mood == "proud")
+
+# 没有存档时（测试 / headless / 目录只读）一切照旧，不能崩
+win = make_window()
+fire(win, "pet:dance")
+check("没有亲密度存档时也不崩", win.bond is None)
 
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

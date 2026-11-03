@@ -24,8 +24,9 @@ import threading
 import time
 
 from .core import logging_setup
+from .core.bond import BondTracker
 from .core.bus import EventBus
-from .core.config import DEFAULT_CONFIG, Config
+from .core.config import BOND_FILE, Config
 from .core.control import ControlCenter
 from .core.engine import GestureEngine
 from .core.events import (ActionDone, ControlToggled, GestureFired,
@@ -229,7 +230,7 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
     # 所有"开关"的唯一入口：桌宠右上角的 ×、面板、托盘、双手捏合都走它
     control = ControlCenter(bus, engine, cfg)
 
-    window = PetWindow(bus, cfg, control)
+    window = PetWindow(bus, cfg, control, bond=BondTracker.load(BOND_FILE))
     window.start()
 
     worker = None if demo else PerceptionWorker(cfg, bus, router, engine, control)
@@ -240,6 +241,9 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
             worker.stop()
         if demo_src is not None:
             demo_src.stop()
+        # 退出前补一次存档：正常退出不该丢掉最后那段互动
+        if window.bond is not None:
+            window.bond.save()
         app.quit()
 
     control.attach_worker(worker)

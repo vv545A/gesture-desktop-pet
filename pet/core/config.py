@@ -33,6 +33,10 @@ DEFAULT_CONFIG = os.path.join(HERE, "gestures.yaml")
 #: 旧版配置文件。存在时自动读它并落成 YAML，不用用户手动搬。
 LEGACY_CONFIG = os.path.join(HERE, "pet_config.json")
 
+#: 亲密度的存档。刻意和配置分开放：配置是"用户意图"，亲密度是"它记住的事"，
+#: 点一次"恢复默认配置"不该把相处记录一起清掉。
+BOND_FILE = os.path.join(HERE, "bond.json")
+
 #: 生成新配置时写进文件头的说明。yaml.safe_dump 不会保留注释，
 #: 所以这段是拼在 dump 结果前面的纯文本。
 CONFIG_HEADER = """\

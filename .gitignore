@@ -17,6 +17,9 @@ calibration/
 pet_config.json
 gestures.yaml
 
+# 亲密度存档：属于"这台电脑上的这段关系"，不该进仓库
+bond.json
+
 # 开发会话记忆（与项目代码无关）
 .workbuddy/
 
