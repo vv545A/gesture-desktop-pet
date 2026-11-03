@@ -300,6 +300,15 @@ def main(argv=None) -> int:
     # 否则第一下手势用的还是默认表，看起来就像"改了没生效"。
     mapping.apply_bindings(cfg.bindings)
 
+    # 配置里的 👍 页面（配成带 ?q= 的地址就是"隔空搜索"）。
+    # actions 是懒加载的（非 Windows 也能 import，只是动作用不了），
+    # 这里失败也不该拦住启动。
+    try:
+        import actions as _actions
+        _actions.set_browser_url(cfg.browser_url)
+    except Exception:
+        pass
+
     if args.list_intents:
         print(mapping.describe_table())
         return 0

@@ -117,6 +117,9 @@ class Config:
     # ---------------- 桌宠 ----------------
     pet_name: str = "小鲸"
     pet_scale: float = 1.0
+    # 👍 打开的页面。改成 https://www.bing.com/search?q=关键词 就变成"隔空搜索"。
+    # 必须命中 actions.BROWSER_ALLOWLIST 的前缀，配错了会被拒绝并记一条警告。
+    browser_url: str = "https://www.bing.com/"
     follow: str = "hand"             # hand / cursor / window / corner
     follow_gain: float = 1.6         # 手掌位移 -> 屏幕位移的放大倍数
     # 跟鼠标：身体中心与指针保持多远（太近会盖住指针，点什么都点不到）

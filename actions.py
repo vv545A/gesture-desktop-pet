@@ -410,6 +410,25 @@ BROWSER_ALLOWLIST = (
 #: 👍 默认打开的页面（可在配置里用 url 覆盖，但必须命中白名单）
 DEFAULT_BROWSER_URL = "https://www.bing.com/"
 
+#: 配置覆盖值。空串 = 用默认页。
+_override_url = ""
+
+
+def set_browser_url(url: str) -> None:
+    """
+    启动时由配置覆盖 👍 打开的页面。
+
+    只做最基本的形态检查（必须是 http/https），真正的白名单校验仍然在
+    open_url 里——配置写错了不该变成"绕过安全检查"的后门。
+    """
+    global _override_url
+    u = (url or "").strip()
+    _override_url = u if u.lower().startswith(("http://", "https://")) else ""
+
+
+def _browser_target() -> str:
+    return _override_url or DEFAULT_BROWSER_URL
+
 
 def open_url(url: str) -> bool:
     """
@@ -443,7 +462,7 @@ def open_url(url: str) -> bool:
 # 键名 -> 执行函数。想改映射，只动这里（或 main.py 里的 GESTURE_ACTIONS）。
 ACTIONS = {
     # 唯一一个跨平台动作：不注入按键，只调系统默认浏览器
-    "open_browser": lambda: open_url(DEFAULT_BROWSER_URL),
+    "open_browser": lambda: open_url(_browser_target()),
     "play_pause": lambda: tap(VK["play_pause"]),
     "mute": lambda: tap(VK["vol_mute"]),
     "vol_up": lambda: tap(VK["vol_up"], 3),

@@ -171,6 +171,47 @@ check("双手捏合保持 -> 关闭控制", toggled is False, f"(toggled={toggle
 check("捏合瞬间不当作音乐手势",
       mapping.resolve("both", "PINCH") is None)
 
+# ---------------------------------------------------------------- 双手滚动
+print("== 双手张开上下移动 -> 滚动 ==")
+
+
+def mk_hand(side: str, y: float, gesture: str = "OPEN_PALM") -> Hand:
+    """造一只"张开的手"。关键是拇指尖和食指尖要拉远，否则几何会判成捏合。"""
+    lm = np.zeros((21, 3))
+    lm[:, 0] = 0.5
+    lm[:, 1] = y
+    lm[4] = [0.95, y, 0.0]
+    lm[8] = [0.05, y, 0.0]
+    return Hand(landmarks=lm, score=0.9, side=side, aspect=1.78,
+                model_gesture=gesture, model_score=0.95)
+
+
+def run_scroll(eng: GestureEngine, ys, t0: float = 1000.0):
+    steps, fired = [], []
+    for i, y in enumerate(ys):
+        out = eng.update([mk_hand("left", y), mk_hand("right", y)], t0 + i * 0.05)
+        steps += [v for k, v in out.continuous if k == "scroll"]
+        fired += [f for f in out.fired if f.side == "both"]
+    return steps, fired
+
+
+eng = GestureEngine(Config())
+steps, fired = run_scroll(eng, [0.60 - i * 0.02 for i in range(12)])
+check("双手上移会产出滚动量", len(steps) > 0)
+check("上移是负值（上层翻符号后=页面上滚）", all(v < 0 for v in steps))
+# 这条是"滚动"能用的前提：边滚边触发播放/暂停，音乐就被顺手停了
+check("滚动过程中不触发播放/暂停", not fired)
+
+eng = GestureEngine(Config())
+steps, _ = run_scroll(eng, [0.60 + i * 0.02 for i in range(12)])
+check("双手下移产出反向滚动", len(steps) > 0 and all(v > 0 for v in steps))
+
+# 张开**不动**仍然归"播放/暂停"：这是原有功能，不能被滚动抢走
+eng = GestureEngine(Config())
+steps, fired = run_scroll(eng, [0.50] * 15)
+check("张开不动不产生滚动", not steps)
+check("张开不动仍然触发配对（播放/暂停）", bool(fired))
+
 # ---------------------------------------------------------------- 映射
 print("== 映射表：单手=宠物互动 ==")
 r = mapping.resolve("right", "POINT")

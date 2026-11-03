@@ -191,6 +191,25 @@ YOLO 是目标检测，只能框出"这里有一只手"，框里没有手势语�
 模型：`models/face_landmarker.task`（3.6MB，Apache-2.0，MediaPipe 官方）。
 文件缺失时情绪感知自动关闭，其他功能完全不受影响。
 
+## 隔空翻页与搜索
+
+| 动作 | 效果 | 说明 |
+|---|---|---|
+| 双手张开，上下移动 | 滚动当前窗口（网页、文档都行） | 张开**不动**仍然是播放/暂停，只有真产生位移才滚 |
+| 👍（可配） | 打开 `browser_url` | 配成带关键词的地址就是"隔空搜索" |
+
+```yaml
+# gestures.yaml
+browser_url: "https://www.bing.com/search?q=手势识别"
+```
+
+改完重启，比个 👍 就直接搜这个词。地址必须命中 `actions.BROWSER_ALLOWLIST`
+的前缀，配错了会被拒绝并记一条警告——白名单是代码里的边界，不接受配置绕过。
+
+> **为什么不做鼠标指针控制**：手指悬空定位的抖动是按"厘米"算的，落到屏幕上
+> 就是几十像素。做出来的效果是"指哪不打哪"，还不如直接用手。手势适合
+> **离散命令**和**粗粒度连续量**（滚动、音量），不适合精确定位。
+
 ### 为什么双手只做同手势配对（而不是捏合拉开缩放）
 
 早期版本是「双手捏合 → 拉开 = 网页缩放」，实测基本做不出来。三个原因叠在一起：
@@ -549,7 +568,7 @@ python calibrate.py --hold 4 --buffer 2            # 放慢节奏
 
 ```bash
 python tests/test_gestures.py     # 20 项：悬停防抖 / 静止门控 / 缩放步进 / 连捏重置 / 总开关序列 / 左右判定
-python tests/test_pet_core.py     # 62 项：事件总线 / 判定引擎 / 手势映射 / 绑定持久化 / 窗口吸附
+python tests/test_pet_core.py     # 68 项：事件总线 / 判定引擎 / 双手滚动 / 映射 / 绑定 / 吸附
 python tests/test_pet_states.py   # 31 项：睡觉锁 / 跳舞 / 跟随 / 撸宠 / 亲密度接入（Qt offscreen）
 python tests/test_rps.py          # 29 项：石头剪刀布的完整规则（假时钟，不用等倒数）
 python tests/test_bond.py         # 27 项：亲密度等级 / 持久化 / 坏文件容错

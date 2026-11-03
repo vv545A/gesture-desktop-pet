@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 
 import gestures
 from gestures import (
+    ContinuousMapper,
     Debouncer,
     GestureSmoother,
     MotionGate,
@@ -82,6 +83,12 @@ class GestureEngine:
         self.deb_pair = Debouncer(cfg.pair_hold, cfg.pair_cooldown, grace=cfg.grace)
         self.pair_smoother = GestureSmoother(window=5, need=3)
 
+        # 双手张开上下移动 = 网页/文档滚动。
+        # 用**相对变化**而不是绝对位置：手往前伸一点、摄像头换个角度，绝对坐标
+        # 就漂了；相对变化天然免疫这种漂移，还自带平滑。
+        self.scroll_map = ContinuousMapper(gain=26.0, max_step=3.0,
+                                           deadzone=0.004)
+
         self.enabled = True
         self._last_toggle = -1e9
 
@@ -105,6 +112,7 @@ class GestureEngine:
         self.smoother.reset()
         self.deb_pair.reset()
         self.pair_smoother.reset()
+        self.scroll_map.reset()
         self._pinch_since = None
         if self.gate is not None:
             self.gate.reset()
@@ -212,6 +220,23 @@ class GestureEngine:
             self.pair_smoother.reset()
             out.pair = None
             return
+
+        # ---- 双手张开并上下移动 = 网页 / 文档滚动 ----
+        # 张开**不动**仍然归"播放/暂停"（走下面的配对逻辑），只有真的产生位移
+        # 才转成滚动。不加这个区分的话，想滚一下页面，音乐会被顺手停掉。
+        if l_g == "OPEN_PALM" and r_g == "OPEN_PALM" \
+                and st.left is not None and st.right is not None:
+            mid_y = float((st.left.center[1] + st.right.center[1]) / 2)
+            step = self.scroll_map.update(mid_y)
+            if abs(step) > 0.08:
+                out.continuous.append(("scroll", float(step)))
+                # 移动中不判配对，否则"边滚边触发播放/暂停"
+                self.deb_pair.update(None, now)
+                self.pair_smoother.reset()
+                out.pair = None
+                return
+        else:
+            self.scroll_map.reset()
 
         # 只认"两只手同一个手势"：左右不一致就当作没有意图。
         # 这是刻意的取舍 —— 一只手路过画面时不该改变正在播放的音乐。
