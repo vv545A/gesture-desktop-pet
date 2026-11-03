@@ -195,4 +195,25 @@ win = make_window()
 fire(win, "pet:dance")
 check("没有亲密度存档时也不崩", win.bond is None)
 
+print("== 情绪反应 ==")
+from pet.core.events import EmotionChanged                         # noqa: E402
+
+win = make_window()
+win._on_emotion(EmotionChanged(emotion="tired", strength=0.8))
+check("用户累了切安静模式", win._user_mood == "tired" and win._mood == "calm")
+
+win = make_window()
+win._on_emotion(EmotionChanged(emotion="frown", strength=0.6))
+check("用户皱眉会说一句关心", win._bubble != "")
+first_until = win._care_until
+check("关怀设了冷却", first_until > time.monotonic())
+
+# 皱着眉头工作半小时，不该被关怀三十遍
+win._on_emotion(EmotionChanged(emotion="frown", strength=0.6))
+check("冷却期内不重复关怀", win._care_until == first_until)
+
+win = make_window()
+win._on_emotion(EmotionChanged(emotion="happy", strength=0.7))
+check("用户笑时跟着高兴", win._user_mood == "happy" and win._cheer_until > 0)
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

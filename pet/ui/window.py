@@ -32,9 +32,9 @@ from PySide6.QtWidgets import QWidget
 from ..core import windowinfo
 from ..core.bus import EventBus
 from ..core.config import Config
-from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
-                           HandsSeen, PerceptionFailed, PerceptionReady,
-                           PetGame, PetSay, PresenceChanged)
+from ..core.events import (ActionDone, ContinuousAction, ControlToggled,
+                           EmotionChanged, Event, HandsSeen, PerceptionFailed,
+                           PerceptionReady, PetGame, PetSay, PresenceChanged)
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
@@ -152,6 +152,13 @@ class PetWindow(QWidget):
         self._petting = False
         self._pet_said = False             # 这一轮摸够了有没有说过话
 
+        # ---- 用户情绪（来自面部表情）----
+        # 这是"用户的状态"，不是宠物的表情。宠物的反应由下面几个冷却控制，
+        # 免得用户皱着眉头工作半小时，被关怀三十遍。
+        self._user_mood = "neutral"
+        self._care_until = 0.0             # 关怀台词的冷却
+        self._cheer_until = 0.0            # 跟着高兴的冷却
+
         # ---- 气泡 ----
         self._bubble = ""
         self._bubble_t0 = 0.0
@@ -266,6 +273,7 @@ class PetWindow(QWidget):
         self.bus.subscribe(PetSay, self._on_say)
         self.bus.subscribe(PetGame, self._on_game)
         self.bus.subscribe(PresenceChanged, self._on_presence)
+        self.bus.subscribe(EmotionChanged, self._on_emotion)
         self.bus.subscribe(PerceptionReady, self._on_ready)
         self.bus.subscribe(PerceptionFailed, self._on_failed)
 
@@ -420,6 +428,31 @@ class PetWindow(QWidget):
         if not self._asleep:
             self._napping = True
             self._set_mood("sleepy", 1e9)
+
+    def _on_emotion(self, ev: Event) -> None:
+        """
+        用户情绪的**反应策略**。
+
+        三种反应刻意做得不一样：
+            累  -> 什么都不说，只是把动作变轻（安静陪伴）。累了的人不想被搭话。
+            皱眉-> 说一句关心的，但有 90 秒冷却，不当复读机。
+            笑  -> 跟着高兴一下，同样有冷却。
+
+        阈值和情绪本身在 `pet/perception/emotion.py`，这里只管"怎么表现"。
+        """
+        assert isinstance(ev, EmotionChanged)
+        self._user_mood = ev.emotion
+        now = time.monotonic()
+
+        if ev.emotion == "tired":
+            # 安静陪伴靠的是"它变轻了"，不是"它说我在陪你"
+            self._set_mood("calm", 1e9)
+        elif ev.emotion == "frown" and now > self._care_until:
+            self._care_until = now + 90.0
+            self.say("要不要歇会儿？", "shy")
+        elif ev.emotion == "happy" and now > self._cheer_until:
+            self._cheer_until = now + 45.0
+            self.say("看你笑我也想笑～", "happy")
 
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
@@ -748,6 +781,9 @@ class PetWindow(QWidget):
             # 被摸时表情锁在 shy。不每帧续上的话，shy 那 0.6 秒一过
             # 就被下面的超时逻辑拉回 idle——摸到一半突然不脸红了，很出戏。
             self._set_mood("shy", 0.6)
+        elif self._user_mood == "tired" and not (self._asleep or self._napping):
+            # 安静陪伴：他累了就安静待着，别用活泼的表情去打扰
+            self._set_mood("calm", 1e9)
         elif now > self._mood_until and self._mood not in ("idle", "sleepy"):
             self._set_mood("idle", 0.5)
 
@@ -776,6 +812,14 @@ class PetWindow(QWidget):
         #     所以撸宠的反馈主要落在尾巴上，台词只做点缀。
         if self._petting:
             target.wag += 0.50 * math.sin(now * 7.5)
+
+        # 4d) 用户累了：所有微动幅度压到四成。
+        #     "安静陪伴"落到像素上就是——存在感变低，但不是消失。
+        #     直接停掉呼吸会像一张贴图卡住了，那比不陪伴更糟。
+        if self._user_mood == "tired":
+            target.bob *= 0.4
+            target.squash *= 0.4
+            target.wag *= 0.4
 
         # 5) 进度环 / 柔光：目标值来自事件，这里追上去，避免一帧闪
         self._aura += (self._aura_target - self._aura) * _clamp(dt * 10, 0, 1)

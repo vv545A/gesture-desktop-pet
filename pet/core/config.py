@@ -55,6 +55,9 @@ MODEL_DIR = os.path.join(HERE, "models")
 HAND_MODEL = os.path.join(MODEL_DIR, "hand_landmarker.task")
 GESTURE_MODEL = os.path.join(MODEL_DIR, "gesture_recognizer.task")
 FACE_MODEL = os.path.join(MODEL_DIR, "blaze_face_short_range.tflite")
+# 表情模型（3.6MB，带 52 个 blendshape 系数）。缺失时情绪感知自动关闭。
+# 不在仓库里，需要单独下载（见 README 的"情绪感知"一节）。
+EMOTION_MODEL = os.path.join(MODEL_DIR, "face_landmarker.task")
 
 
 def sprite_path(name: str) -> str:
@@ -79,6 +82,10 @@ class Config:
     presence: bool = True
     presence_interval: float = 0.5   # 多久查一次（调低反应快、更费 CPU）
     away_after: float = 6.0          # 多久没看到人算离开（要能容忍低头捡东西）
+    # 情绪感知：从面部动作系数推断"在笑/累了/皱眉"，用来切换陪伴方式。
+    # 开销比在场检测高（约 4~9ms），所以默认 1 秒一次。
+    emotion: bool = True
+    emotion_interval: float = 1.0
 
     # ---------------- 判定（与 main.py 的默认值保持一致，手感才不会割裂） ----
     hold: float = 0.5                # 悬停多久确认（单手窗口操作）

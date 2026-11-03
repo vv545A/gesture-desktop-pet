@@ -33,12 +33,15 @@ from face_guard import FaceGuard
 from hand_tracker import HandTracker
 
 from ..core.bus import EventBus
-from ..core.config import GESTURE_MODEL, HAND_MODEL, FACE_MODEL, Config
+from ..core.config import (EMOTION_MODEL, FACE_MODEL, GESTURE_MODEL,
+                           HAND_MODEL, Config)
 from ..core.engine import GestureEngine
-from ..core.events import (ControlToggled, HandsSeen, PerceptionFailed,
-                           PerceptionReady, PetGame, PresenceChanged)
+from ..core.events import (ControlToggled, EmotionChanged, HandsSeen,
+                           PerceptionFailed, PerceptionReady, PetGame,
+                           PresenceChanged)
 from ..game.rps import CHOICES, LABEL, RPSGame
 from ..intent.router import IntentRouter
+from .emotion import EmotionDetector
 from .presence import PresenceDetector
 
 log = logging.getLogger(__name__)
@@ -78,6 +81,12 @@ class PerceptionWorker(threading.Thread):
                 away_after=self.cfg.away_after,
             )
             self.presence = det if det.enabled else None
+
+        # ---- 情绪感知（可选）----
+        self.emotion = None
+        if self.cfg.emotion:
+            emo = EmotionDetector(EMOTION_MODEL, interval=self.cfg.emotion_interval)
+            self.emotion = emo if emo.enabled else None
 
     # ---------------------------------------------------------------- 生命周期
     def stop(self) -> None:
@@ -158,6 +167,8 @@ class PerceptionWorker(threading.Thread):
                 tracker.close()
             if self.presence is not None:
                 self.presence.close()
+            if self.emotion is not None:
+                self.emotion.close()
             log.info("已停止")
 
     # ---------------------------------------------------------------- 主循环
@@ -233,6 +244,12 @@ class PerceptionWorker(threading.Thread):
                 changed = self.presence.update(frame, now, has_hand=bool(hands))
                 if changed is not None:
                     self.bus.post(PresenceChanged(present=changed))
+
+            # 情绪感知：内部 1Hz，只在情绪真的变了时返回
+            if self.emotion is not None:
+                emo = self.emotion.update(frame, now)
+                if emo is not None:
+                    self.bus.post(EmotionChanged(emotion=emo[0], strength=emo[1]))
 
             # 待启动的游戏在这里起：和引擎共用同一个时钟（perf_counter）
             if self._game_pending:

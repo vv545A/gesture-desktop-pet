@@ -127,6 +127,19 @@ class PresenceChanged(Event):
 
 
 @dataclass
+class EmotionChanged(Event):
+    """
+    用户情绪变了（来自面部表情，只在变化时发）。
+
+    注意这是**用户的**情绪，不是宠物的表情。宠物怎么反应由界面层决定——
+    感知层只负责"我看到他在笑"，不负责"所以我要怎么样"。
+    """
+
+    emotion: str = "neutral"       # neutral / happy / tired / frown
+    strength: float = 0.0
+
+
+@dataclass
 class PetGame(Event):
     """
     小游戏状态（石头剪刀布）。
