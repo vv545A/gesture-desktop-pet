@@ -98,23 +98,23 @@ class Motion:
 #   跟随（follow-through）：回弹时轻微过冲，再收住
 CLIPS: Dict[str, Clip] = {
     # 成功执行一个手势 -> 开心地蹦一下
-    "hop": Clip("hop", 0.55, (
-        Frame(0.00, sy=1.00),
-        Frame(0.14, sy=0.90, sx=1.07),                    # 预备：下蹲
-        Frame(0.32, dy=-0.105, sy=1.08, sx=0.94),         # 起跳
-        Frame(0.56, dy=-0.058, sy=1.03, sx=0.97),
-        Frame(0.78, dy=0.008, sy=0.91, sx=1.07),          # 落地压扁
-        Frame(1.00, sy=1.00),
+    "hop": Clip("hop", 0.58, (
+        Frame(0.00, frame="happy"),
+        Frame(0.14, sy=0.88, sx=1.09, frame="happy"),              # 预备：下蹲
+        Frame(0.32, dy=-0.110, sy=1.08, sx=0.94, frame="happy"),    # 起跳
+        Frame(0.56, dy=-0.062, sy=1.03, sx=0.97, frame="happy"),
+        Frame(0.78, dy=0.010, sy=0.90, sx=1.08, frame="happy"),     # 落地压扁
+        Frame(1.00, frame="happy"),
     )),
     # 手势失败 / 被戳烦了 -> 摇头（左右晃 + 小角度转）
-    "shake": Clip("shake", 0.62, (
-        Frame(0.00),
-        Frame(0.12, dx=0.035, rot=5.0),
-        Frame(0.30, dx=-0.035, rot=-5.0),
-        Frame(0.48, dx=0.026, rot=3.6),
-        Frame(0.66, dx=-0.017, rot=-2.4),
-        Frame(0.84, dx=0.007, rot=1.0),
-        Frame(1.00),
+    "shake": Clip("shake", 0.70, (
+        Frame(0.00, frame="angry"),
+        Frame(0.12, dx=0.050, rot=6.0, frame="angry"),
+        Frame(0.30, dx=-0.050, rot=-6.0, frame="angry"),
+        Frame(0.48, dx=0.038, rot=4.4, frame="angry"),
+        Frame(0.66, dx=-0.024, rot=-2.8, frame="angry"),
+        Frame(0.84, dx=0.010, rot=1.2, frame="angry"),
+        Frame(1.00, frame="angry"),
     )),
     # 招手：手（也就是整只宠物）轻轻摆，配 wave 帧
     "wave": Clip("wave", 1.30, (
@@ -125,34 +125,38 @@ CLIPS: Dict[str, Clip] = {
         Frame(0.86, rot=2.0, frame="wave"),
         Frame(1.00),
     )),
-    # 点头：承认、收到
-    "nod": Clip("nod", 0.70, (
+    # 点头：承认、收到。整只身子往下点三下 —— 立绘没有脖子，只能这样"点头"，
+    # 幅度必须给到身高的 5%（约 9px）才看得出来，3px 的微动等于没动。
+    "nod": Clip("nod", 0.90, (
         Frame(0.00),
-        Frame(0.22, dy=0.022, sy=0.985),
-        Frame(0.44, dy=-0.004),
-        Frame(0.66, dy=0.016, sy=0.99),
+        Frame(0.16, dy=0.055, sy=0.975),
+        Frame(0.32, dy=-0.012),
+        Frame(0.48, dy=0.050, sy=0.980),
+        Frame(0.64, dy=-0.010),
+        Frame(0.78, dy=0.032, sy=0.990),
         Frame(1.00),
     )),
-    # 打哈欠：往上伸、再塌下来
+    # 打哈欠：往上伸、再塌下来。帧直接换 sleepy —— 这是"困了"最直观的信号。
     "yawn": Clip("yawn", 1.70, (
         Frame(0.00, frame="sleepy"),
-        Frame(0.30, dy=-0.012, sy=1.05, sx=0.97, frame="sleepy"),
-        Frame(0.62, dy=-0.006, sy=1.06, sx=0.96, frame="sleepy"),
-        Frame(0.82, dy=0.012, sy=0.95, sx=1.04, frame="sleepy"),
+        Frame(0.28, dy=-0.022, sy=1.12, sx=0.92, frame="sleepy"),
+        Frame(0.60, dy=-0.028, sy=1.14, sx=0.90, frame="sleepy"),
+        Frame(0.84, dy=0.014, sy=0.93, sx=1.05, frame="sleepy"),
         Frame(1.00, frame="sleepy"),
     )),
-    # 吓了一跳：猛地一弹
-    "startle": Clip("startle", 0.44, (
-        Frame(0.00, sy=1.10, sx=0.94, dy=-0.020, frame="wave"),
-        Frame(0.30, sy=0.97, sx=1.03, dy=0.004, frame="wave"),
-        Frame(0.65, sy=1.015),
-        Frame(1.00),
+    # 吓了一跳：猛地一弹，配 wave 帧（举手 = 受惊）—— 只靠 2px 的位移，
+    # 拖动的时候人是看不见的，必须换姿势。
+    "startle": Clip("startle", 0.46, (
+        Frame(0.00, sy=1.12, sx=0.93, dy=-0.055, frame="wave"),
+        Frame(0.32, sy=0.95, sx=1.05, dy=0.006, frame="wave"),
+        Frame(0.68, sy=1.02, sx=0.99, frame="wave"),
+        Frame(1.00, frame="wave"),
     )),
     # 坐下 / 站起（帧由情绪决定，这里只管"塌下去"这个过渡）
     "sit_down": Clip("sit_down", 0.55, (
         Frame(0.00),
         Frame(0.35, dy=-0.010, sy=1.03),
-        Frame(0.75, dy=0.012, sy=0.95, sx=1.04),
+        Frame(0.75, dy=0.016, sy=0.93, sx=1.05, frame="sit"),
         Frame(1.00, frame="sit"),
     ), restartable=False),
     "stand_up": Clip("stand_up", 0.50, (
@@ -161,20 +165,20 @@ CLIPS: Dict[str, Clip] = {
         Frame(0.75, sy=0.99),
         Frame(1.00),
     ), restartable=False),
-    # 伸懒腰（坐久了活动一下）
-    "stretch": Clip("stretch", 1.50, (
-        Frame(0.00),
-        Frame(0.30, dy=-0.028, sy=1.07, sx=0.95, rot=-2.0),
-        Frame(0.55, dy=-0.030, sy=1.08, sx=0.94, rot=2.0),
-        Frame(0.80, dy=0.006, sy=0.97, sx=1.02),
-        Frame(1.00),
+    # 伸懒腰（坐久了活动一下）：举手 + 拔高 + 左右晃，帧用 wave（举着手的姿势）
+    "stretch": Clip("stretch", 1.60, (
+        Frame(0.00, dy=-0.010, frame="wave"),
+        Frame(0.30, dy=-0.045, sy=1.12, sx=0.90, rot=-3.0, frame="wave"),
+        Frame(0.58, dy=-0.050, sy=1.13, sx=0.89, rot=3.0, frame="wave"),
+        Frame(0.82, dy=0.008, sy=0.96, sx=1.03, frame="wave"),
+        Frame(1.00, frame="wave"),
     )),
-    # 被摸：轻轻一缩，配爱心特效
-    "pat": Clip("pat", 0.46, (
-        Frame(0.00),
-        Frame(0.22, dy=0.014, sy=0.93, sx=1.05),
-        Frame(0.52, dy=-0.006, sy=1.02, sx=0.99),
-        Frame(1.00),
+    # 被摸：开心地缩一下，配爱心特效
+    "pat": Clip("pat", 0.50, (
+        Frame(0.00, frame="happy"),
+        Frame(0.22, dy=0.020, sy=0.90, sx=1.06, frame="happy"),
+        Frame(0.55, dy=-0.008, sy=1.03, sx=0.99, frame="happy"),
+        Frame(1.00, frame="happy"),
     )),
 }
 

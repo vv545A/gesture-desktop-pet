@@ -49,6 +49,12 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else (hi if v > hi else v)
 
 
+# 这几个情绪属于"没在回应你"，待机剧本（哈欠/坐下/伸懒腰）可以接管。
+# love / angry / happy / wave / surprised 都不在里面 —— 那正是它正在回应你的证据。
+# sit 必须在里面：坐下是个持续状态，伸懒腰要在这个状态下才排得上队。
+_IDLE_MOODS = ("idle", "listen", "calm", "sleepy", "sit")
+
+
 class PetWindow(QWidget):
     def __init__(self, bus: EventBus, cfg: Config, control=None) -> None:
         super().__init__()
@@ -111,6 +117,10 @@ class PetWindow(QWidget):
         self._last_x = 0.0
         self._park_until = 0.0             # 用户手动拖过之后，暂时别自己跑
         self._last_hand = time.monotonic()  # 用"现在"初始化：刚启动不该立刻困成待机
+        # "上一次有人逗它"的时刻。待机倒计时从 max(最后一次看到手, 最后一次互动)
+        # 起算 —— 不然你正戳得开心，它照样按"多久没看到手"去打哈欠。
+        self._last_react = self._last_hand
+        self._hand_seen = False            # 上一帧画面里有没有手（用来取"手刚走"的边沿）
         self._hand_pt: Optional[tuple] = None
 
         # ---- 吸附到窗口（follow == "window"） ----
@@ -260,24 +270,47 @@ class PetWindow(QWidget):
         assert isinstance(ev, HandsSeen)
         now = time.monotonic()
         away = now - self._last_hand      # 这帧之前，已经多久没见过手了
-        if ev.count and ev.point:
+        seen = bool(ev.count and ev.point)
+
+        if seen:
             self._last_hand = now
             self._hand_pt = ev.point
             self._follow_hand(ev.point)
             # 手在画面里移动 -> 视线跟着手，是最便宜也最有效的"活着"信号
             self._look = (_clamp((ev.point[0] - 0.5) * 2.2, -1.0, 1.0),
                           _clamp((ev.point[1] - 0.5) * 2.0, -1.0, 1.0))
-            self._wake_up("hand", now, away)
+            # 招手只在"手刚入镜"那一下演。以前每帧都调，away 又一直是 0，
+            # 所以除了第一帧之外什么都不会发生，白写。
+            if not self._hand_seen:
+                self._wake_up("hand", now, away)
         else:
             self._hand_pt = None
             self._look = (0.0, 0.0)
-            self._yawned = False          # 手走了：下次犯困可以再打一次哈欠
+            # 手刚离开：这一轮"困了"结束，下次犯困可以重新打一个哈欠。
+            # 注意只能认**边沿**。感知线程在摄像头开着的时候以 20Hz 持续发
+            # HandsSeen(count=0)，如果这里每帧都重置，待机分支就会每 50ms
+            # 重新开始播哈欠 —— 永远停在第 0 帧，用户看到的就是"从来不伸懒腰、
+            # 不打哈欠、戳了也不动"。这是这套动作系统最大的一次坑。
+            if self._hand_seen:
+                self._yawned = False
+        self._hand_seen = seen
 
         # 悬停进度环：这 0.5 秒的等待画在宠物身上，比画在屏幕角落直观得多
         self._aura_target = float(ev.progress) if ev.count else 0.0
         self._glow_target = 1.0 if ev.count else 0.0
         if ev.count and self._mood in ("idle", "sleepy", "sit"):
             self._set_mood("listen", hold=0.8)
+
+    def _touch(self, now: float) -> None:
+        """
+        记一笔"有人理我了"，顺便把"困了没"重置掉。
+
+        待机剧本（哈欠 → 坐下 → 伸懒腰）的倒计时是从这里起算的。少了这一笔，
+        会出现很怪的一幕：你正在戳它、它陪你玩得好好的，突然打个哈欠坐下 ——
+        因为它的倒计时只看"多久没看到手"，根本不知道有人在戳它。
+        """
+        self._last_react = now
+        self._yawned = False
 
     def _stand_up(self, now: float) -> None:
         """
@@ -318,6 +351,7 @@ class PetWindow(QWidget):
     def _on_action(self, ev: Event) -> None:
         assert isinstance(ev, ActionDone)
         now = time.monotonic()
+        self._touch(now)
         self._stand_up(now)
         if ev.ok:
             # 成功 -> 蹦一下。动作反馈要"有重量"，不能只是文字变一下
@@ -372,6 +406,7 @@ class PetWindow(QWidget):
     def say(self, text: str, mood: str = "happy") -> None:
         self._bubble = text
         self._bubble_t0 = time.monotonic()
+        self._touch(self._bubble_t0)
         if mood != "sit":
             self._stand_up(self._bubble_t0)
         self._set_mood(mood, hold=1.6)
@@ -380,9 +415,9 @@ class PetWindow(QWidget):
         self._mood = mood
         self._mood_until = time.monotonic() + hold
 
-    def pet_me(self) -> None:
+    def pet_me(self) -> int:
         """
-        被点 / 被摸 —— 唯一不需要手势就能建立的"关系"。
+        被点 / 被摸 —— 唯一不需要手势就能建立的"关系"。返回这是窗口内的第几下。
 
         这里是整个桌宠最容易被点到的交互，所以做了**升级**：
             第 1 下  缩一下、冒爱心："嘿嘿…好痒"
@@ -396,6 +431,7 @@ class PetWindow(QWidget):
         self._pats = [t for t in self._pats if now - t < window]
         self._pats.append(now)
         n = len(self._pats)
+        self._touch(now)
         self._stand_up(now)
 
         if n >= max(2, self.cfg.pet_pat_limit):
@@ -403,12 +439,14 @@ class PetWindow(QWidget):
             self._anim.play("shake", now, force=True)
             self.say(random.choice(["别、别再戳啦！", "哼！不理你了", "戳坏了要赔的"]),
                      "angry")
+            return 0                    # 0 = 这一轮戳完了，别再弹面板
         elif n >= 2:
             self._anim.play("hop", now, force=True)
             self.say(random.choice(["还要～", "嘿嘿，再来", "好痒好痒"]), "happy")
         else:
             self._anim.play("pat", now, force=True)
             self.say("嘿嘿…好痒", "love")
+        return n
 
     # ---------------------------------------------------------------- 跟随
     def _follow_hand(self, pt: tuple) -> None:
@@ -573,22 +611,42 @@ class PetWindow(QWidget):
         self._last_tick = now
         self._phase = now
 
-        # 1) 一段时间没看到手 -> 回角落待机。
+        # 1) 一段时间没人理 -> 困、打哈欠、坐下、伸懒腰。
         #    "没人的时候别赖在屏幕中间"是桌宠的基本礼貌。
         #    吸附/跟鼠标两种模式下不回家：一个要守在操作目标旁边，
         #    一个位置本来就由指针决定，抢位置只会让两边打架。
-        quiet = now - self._last_hand
+        #
+        #    倒计时从 max(最后一次看到手, 最后一次互动) 起算。只看"多久没看到手"
+        #    的话，你正戳它、它陪你玩得开心，下一秒照样打哈欠坐下 —— 因为摄像头
+        #    里没有手，它不知道有人在逗它。
+        quiet = now - max(self._last_hand, self._last_react)
         # 站起来了就重新允许伸懒腰 —— 这样"坐下 → 伸个懒腰 → 被叫醒 → 又坐下"
         # 每一轮都有一次，不用在每个站起来的地方各写一遍重置。
         if not self._sit:
             self._stretched = False
-        if quiet > self.cfg.idle_after:
-            if self._mood not in ("sleepy", "shy", "sit"):
-                self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
-            # 刚犯困：打一个哈欠。只打一次，否则每帧都在打，像卡住了。
-            if quiet > self.cfg.idle_after * 2 and not self._yawned:
-                self._yawned = True
-                self._anim.play("yawn", now)
+
+        # 只有"情绪还停在待机档"时才演待机剧本。
+        # 这一行是全套动作的命门：以前这里无条件 `_set_mood("sleepy")`，
+        # 戳一下设的 love、执行失败设的 angry、招手设的 wave 全在下一帧
+        # （16ms）被按回 sleepy，动作片段又被跟着来的哈欠顶掉 ——
+        # 表现就是"怎么戳都像没反应、保存也不点头、拖动没变化"。
+        idle_mood = self._mood in _IDLE_MOODS
+        if quiet > self.cfg.idle_after and idle_mood:
+            # 犯困：打一个哈欠，并把表情切到"打瞌睡"。
+            # 放在 idle_after*2（默认 10 秒）：5 秒只是"回角落待命"，
+            # 10 秒才真的困。只打一次 —— 每帧都重播等于永远停在第 0 帧
+            # （踩过，见 _on_hands 的注释）。
+            if quiet > self.cfg.idle_after * 2:
+                if not self._yawned and not self._anim.active and not self._sit:
+                    self._yawned = True
+                    self._anim.play("yawn", now)
+                    self._set_mood("sleepy", hold=1e9)
+                    # 哈欠配一句话：光靠"身体拔高一点 + 换张闭眼图"，
+                    # 很多人根本注意不到它困了。这里只写气泡，不走 say() ——
+                    # say() 会顺手把"有人在逗它"的计时器重置，一个哈欠就把
+                    # 自己从待机里救出来了，逻辑会自相矛盾。
+                    self._bubble = "哈啊～…"
+                    self._bubble_t0 = now
             # 坐久了：坐下。这是"没人理我"的最强信号，比站着发呆更像活的。
             if (quiet > max(self.cfg.idle_sit_after, self.cfg.idle_after * 2)
                     and not self._sit and not self._ui_open()
@@ -598,9 +656,9 @@ class PetWindow(QWidget):
                 self._anim.play("sit_down", now)
             # 坐更久：伸个懒腰。坐着一直不动就成了图片，伸一次就"活着"了。
             # 只伸一次 —— 每隔几秒伸一下比不动更假（像卡在循环里）。
-            if (self._sit and not self._stretched
-                    and quiet > max(self.cfg.idle_sit_after * 1.8,
-                                    self.cfg.idle_sit_after + 12.0)):
+            if (self._sit and not self._stretched and not self._anim.active
+                    and quiet > max(self.cfg.idle_sit_after * 1.4,
+                                    self.cfg.idle_sit_after + 15.0)):
                 self._stretched = True
                 self._anim.play("stretch", now)
             if (self.cfg.follow not in ("window", "cursor") and not self._dragging
@@ -932,8 +990,10 @@ class PetWindow(QWidget):
                 self._drag_moved = True
                 # 被拎起来了：惊吓一下。只在"真的开始拖"时触发，
                 # 单击不会，所以不会和"摸"的反馈打架。
-                self._stand_up(time.monotonic())
-                self._anim.play("startle", time.monotonic())
+                now = time.monotonic()
+                self._touch(now)
+                self._stand_up(now)
+                self._anim.play("startle", now, force=True)
 
         if self._dragging and self._drag_moved:
             p = ev.globalPosition().toPoint() - self._drag_grab

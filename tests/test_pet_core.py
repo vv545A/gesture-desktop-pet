@@ -338,18 +338,28 @@ for name, c in anim.CLIPS.items():
 check("所有动作的关键帧都合法（首尾 0/1、时间递增、帧名存在）", not bad, str(bad[:3]))
 check("动作库里至少有 10 个动作", len(anim.CLIPS) >= 10, f"({len(anim.CLIPS)})")
 
+# "动作看不见"是这个项目返工最多的一类 bug：位移只有 2~3px、又不换立绘，
+# 靠肉眼根本判断不出有没有播。这条把门槛写死：要么换帧，要么位移够大。
+dim = []
+for name, c in anim.CLIPS.items():
+    move = max(max(abs(f.dy), abs(f.dx)) for f in c.frames)
+    frames = {f.frame for f in c.frames if f.frame}
+    if move < 0.030 and not frames:
+        dim.append(f"{name}({move:.3f})")
+check("每个动作都看得见（换帧 或 位移≥3% 身高）", not dim, str(dim))
+
 p = anim.AnimPlayer()
 check("动作名拼错不会播", p.play("没有这个动作", 0.0) is False and not p.active)
 
 p.play("hop", 0.0)
 m0 = p.sample(0.0)
 check("起手是原样（不动）", m0 is not None and abs(m0.dy) < 1e-9 and abs(m0.sx - 1) < 1e-9)
-m_mid = p.sample(0.55 * 0.32)
+m_mid = p.sample(0.58 * 0.32)
 check("跳到最高点时向上位移", m_mid is not None and m_mid.dy < -0.08, f"(dy={m_mid.dy:.3f})")
 check("跳起来时被拉长", m_mid.sy > 1.0 and m_mid.sx < 1.0)
-m_land = p.sample(0.55 * 0.80)
+m_land = p.sample(0.58 * 0.80)
 check("落地时压扁", m_land is not None and m_land.sy < 1.0 and m_land.sx > 1.0)
-check("播完返回 None", p.sample(0.56) is None and not p.active)
+check("播完返回 None", p.sample(0.60) is None and not p.active)
 
 p.stop()
 p.play("wave", 0.0)
@@ -365,8 +375,8 @@ check("没在播的时候进度是 0 且不叠加变换",
       p3.progress(9.9) == 0.0 and p3.sample(9.9) is None)
 p2 = anim.AnimPlayer()
 p2.play("nod", 0.0, speed=2.0)
-check("二倍速让 0.7 秒的动作在 0.175 秒走完一半",
-      abs(p2.progress(0.175) - 0.5) < 0.01, f"(p={p2.progress(0.175):.3f})")
+check("二倍速让 0.9 秒的动作在 0.225 秒走完一半",
+      abs(p2.progress(0.225) - 0.5) < 0.01, f"(p={p2.progress(0.225):.3f})")
 
 # ---------------------------------------------------------------- 配置迁移
 # 换形象最容易踩的坑：用户机器上的 pet_config.json 写死了旧立绘路径，
