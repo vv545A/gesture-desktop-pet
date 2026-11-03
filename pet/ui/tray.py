@@ -76,6 +76,12 @@ class PetTray:
             follow.addAction(a)
             self._follow_actions[key] = a
 
+        self.act_game = QAction("玩石头剪刀布（✊ ✌️ ✋）", menu, checkable=True)
+        self.act_game.triggered.connect(self._toggle_game)
+        menu.addAction(self.act_game)
+
+        menu.addSeparator()
+
         act_help = QAction("手势对照表（可修改）", menu)
         act_help.triggered.connect(self.window.open_bindings)
         menu.addAction(act_help)
@@ -118,6 +124,18 @@ class PetTray:
         self.act_through.setChecked(bool(self.window.cfg.click_through))
         for key, act in self._follow_actions.items():
             act.setChecked(self.window.cfg.follow == key)
+        # 游戏可能因为退出/超时自己结束，勾选要跟着真实状态，不能只信点击
+        game = getattr(getattr(self.control, "worker", None), "game", None)
+        self.act_game.setChecked(bool(getattr(game, "active", False)))
+
+    def _toggle_game(self, checked: bool) -> None:
+        if self.control is None:
+            self.act_game.setChecked(False)
+            self.bus.post(PetSay(text="得先有摄像头才能玩哦", mood="shy"))
+            return
+        ok = self.control.set_game(bool(checked))
+        # 没进得去（演示模式/没摄像头）就把勾去掉，别留个假勾让人以为在玩
+        self.act_game.setChecked(bool(checked) and ok)
 
     def _toggle_enabled(self, checked: bool) -> None:
         if self.control is not None:

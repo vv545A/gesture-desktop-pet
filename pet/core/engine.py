@@ -84,6 +84,12 @@ class GestureEngine:
 
         self.enabled = True
         self._last_toggle = -1e9
+
+        # 游戏模式的手势拦截器。返回 True = "这一下被游戏吃掉了"，
+        # 不再走正常映射——否则玩石头剪刀布时比个 ✊，既出了石头又让它睡觉。
+        # 用回调而不是让引擎直接持有 RPSGame：core 不该反过来依赖玩法层，
+        # headless 模式和单元测试也就不必拖上游戏代码。
+        self._game_hook = None
         self._pinch_since: Optional[float] = None   # 双手捏合开始计时点
 
     # ---------------------------------------------------------------- 开关
@@ -151,7 +157,20 @@ class GestureEngine:
             self.pair_smoother.reset()
             if self.gate is not None:
                 self.gate.reset()
+
+        # 游戏模式：确认过的手势先给游戏过一遍，没被吃掉的才当正常意图。
+        # 放在最后统一处理，而不是塞进 _single/_double 里——那两处各有分支，
+        # 漏一条就会出现"玩着游戏还在切窗口"。
+        if self._game_hook is not None and out.fired:
+            out.fired = [f for f in out.fired
+                         if not self._game_hook(f.gesture, now)]
+
         return out
+
+    # ---------------------------------------------------------------- 游戏模式
+    def set_game_hook(self, hook) -> None:
+        """挂上/摘掉手势拦截器。传 None = 退出游戏，手势恢复正常含义。"""
+        self._game_hook = hook
 
     # ---------------------------------------------------------------- 单手：窗口
     def _single(self, st: TwoHandState, out: EngineOut, now: float) -> None:

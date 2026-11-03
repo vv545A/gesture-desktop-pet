@@ -33,7 +33,8 @@ from ..core import windowinfo
 from ..core.bus import EventBus
 from ..core.config import Config
 from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
-                           HandsSeen, PerceptionFailed, PerceptionReady, PetSay)
+                           HandsSeen, PerceptionFailed, PerceptionReady,
+                           PetGame, PetSay)
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
@@ -137,6 +138,7 @@ class PetWindow(QWidget):
         self._asleep = False               # ✊ 之后的硬锁
         self._dance_until = 0.0            # ✌️ 跳舞的结束时刻（限时，不是永动）
         self._follow_backup = ""           # 切到跟鼠标前的模式，醒来时还原
+        self._game_on = False              # 正在玩石头剪刀布（游戏时不回角落）
 
         # ---- 气泡 ----
         self._bubble = ""
@@ -250,6 +252,7 @@ class PetWindow(QWidget):
         self.bus.subscribe(ContinuousAction, self._on_continuous)
         self.bus.subscribe(ControlToggled, self._on_toggle)
         self.bus.subscribe(PetSay, self._on_say)
+        self.bus.subscribe(PetGame, self._on_game)
         self.bus.subscribe(PerceptionReady, self._on_ready)
         self.bus.subscribe(PerceptionFailed, self._on_failed)
 
@@ -347,6 +350,36 @@ class PetWindow(QWidget):
     def _on_say(self, ev: Event) -> None:
         assert isinstance(ev, PetSay)
         self.say(ev.text, ev.mood)
+
+    def _on_game(self, ev: Event) -> None:
+        """
+        石头剪刀布的**显示**。这里一个 if 都不涉及规则。
+
+        谁赢谁输、几比几，都是感知线程算好传过来的。分开的好处很实际：
+        想改成五局三胜只动 `rps.py`，想改说法只动这里，两边互不牵扯。
+        """
+        assert isinstance(ev, PetGame)
+        self._game_on = bool(ev.active)
+
+        if not ev.active:
+            # 刚退出游戏：把"倒数/惊讶"这类临时表情收回来
+            if self._mood in ("listen", "surprised"):
+                self._set_mood("happy", 1.2)
+            return
+
+        if ev.phase == "countdown":
+            # 倒数用短气泡：一秒一个数字，长句子会被气泡宽度切掉
+            self.say(str(ev.count) if ev.count else "…", "listen")
+        elif ev.phase == "armed":
+            self.say("出！", "surprised")
+        elif ev.phase == "result" and ev.result >= 0:
+            score = f"{ev.score[0]}:{ev.score[1]}"
+            if ev.result == 0:
+                self.say(f"{ev.player} vs {ev.pet}，你赢啦　{score}", "shy")
+            elif ev.result == 1:
+                self.say(f"{ev.player} vs {ev.pet}，我赢咯　{score}", "proud")
+            else:
+                self.say(f"都是{ev.player}，平局　{score}", "calm")
 
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
@@ -547,7 +580,7 @@ class PetWindow(QWidget):
         if self._asleep:
             if self._mood != "sleepy":
                 self._set_mood("sleepy", 1e9)
-        elif quiet > self.cfg.idle_after:
+        elif quiet > self.cfg.idle_after and not self._game_on:
             if self._mood not in ("sleepy", "shy"):
                 self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
             if (self.cfg.follow not in ("window", "cursor") and not self._dragging

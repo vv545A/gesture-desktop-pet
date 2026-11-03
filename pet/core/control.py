@@ -17,7 +17,7 @@ from __future__ import annotations
 from .bus import EventBus
 from .config import Config
 from .engine import GestureEngine
-from .events import ControlToggled, HandsSeen
+from .events import ControlToggled, HandsSeen, PetSay
 
 
 class ControlCenter:
@@ -59,3 +59,23 @@ class ControlCenter:
 
     def toggle(self) -> bool:
         return self.set_enabled(not self.engine.enabled)
+
+    # ---------------------------------------------------------------- 小游戏
+    def set_game(self, on: bool) -> bool:
+        """
+        进入/退出石头剪刀布。
+
+        没有感知线程（--demo、--headless、摄像头起不来）时**明确说一句**，
+        而不是静默失败——点菜单没反应是最让人恼火的一种交互。
+        """
+        if self.worker is None or not hasattr(self.worker, "set_game"):
+            self.bus.post(PetSay(text="得先有摄像头才能玩哦", mood="shy"))
+            return False
+        ok = self.worker.set_game(on)
+        self.bus.post(PetSay(text="三秒后出拳！✊石头 ✌️剪刀 ✋布" if ok else "不玩啦～",
+                             mood="happy" if ok else "calm"))
+        return ok
+
+    def toggle_game(self) -> bool:
+        playing = getattr(getattr(self.worker, "game", None), "active", False)
+        return self.set_game(not playing)

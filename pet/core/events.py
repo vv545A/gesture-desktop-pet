@@ -112,3 +112,22 @@ class PetSay(Event):
 
     text: str = ""
     mood: str = "happy"
+
+
+@dataclass
+class PetGame(Event):
+    """
+    小游戏状态（石头剪刀布）。
+
+    界面**只负责显示**：倒数是几、谁出了什么、几比几。所有判定都在
+    `pet/game/rps.py` 里做完——界面拿到的已经是结论，不是原料。
+    这条边界一破，游戏规则就会散进 UI 代码，再也没法单测。
+    """
+
+    phase: str = "idle"        # idle / countdown / armed / result
+    count: int = 0             # 倒数剩余秒
+    player: str = ""           # 玩家出的（已转成中文，如"石头"）
+    pet: str = ""              # 宠物出的（已转成中文）
+    result: int = -1           # 0 赢 / 1 输 / 2 平（-1 = 本轮还没有结果）
+    score: Tuple[int, int, int] = (0, 0, 0)
+    active: bool = True
