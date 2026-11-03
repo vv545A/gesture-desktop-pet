@@ -36,9 +36,10 @@ from ..core.bus import EventBus
 from ..core.config import GESTURE_MODEL, HAND_MODEL, FACE_MODEL, Config
 from ..core.engine import GestureEngine
 from ..core.events import (ControlToggled, HandsSeen, PerceptionFailed,
-                           PerceptionReady, PetGame)
+                           PerceptionReady, PetGame, PresenceChanged)
 from ..game.rps import CHOICES, LABEL, RPSGame
 from ..intent.router import IntentRouter
+from .presence import PresenceDetector
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,17 @@ class PerceptionWorker(threading.Thread):
         self._game_sig = None          # 上一次广播过的状态签名（用来节流）
         self._game_pending = False     # 待启动：由主循环用统一时钟启动
         self._game_was_active = False  # 上一帧是否在游戏里（用来发"结束"那一次）
+
+        # ---- 在场检测（可选）----
+        # 模型缺失/加载失败时 enabled=False，这里就不挂，主流程完全不受影响
+        self.presence = None
+        if self.cfg.presence:
+            det = PresenceDetector(
+                FACE_MODEL, min_conf=0.5,
+                interval=self.cfg.presence_interval,
+                away_after=self.cfg.away_after,
+            )
+            self.presence = det if det.enabled else None
 
     # ---------------------------------------------------------------- 生命周期
     def stop(self) -> None:
@@ -144,6 +156,8 @@ class PerceptionWorker(threading.Thread):
         finally:
             if tracker is not None:
                 tracker.close()
+            if self.presence is not None:
+                self.presence.close()
             log.info("已停止")
 
     # ---------------------------------------------------------------- 主循环
@@ -213,6 +227,12 @@ class PerceptionWorker(threading.Thread):
                 hands, _dropped = face_guard.filter(frame, hands)   # 先剔掉"脸被当成手"
 
             now = time.perf_counter()
+
+            # 在场检测：内部自己降到 2Hz，只在"人来了/人走了"那一刻返回非 None
+            if self.presence is not None:
+                changed = self.presence.update(frame, now, has_hand=bool(hands))
+                if changed is not None:
+                    self.bus.post(PresenceChanged(present=changed))
 
             # 待启动的游戏在这里起：和引擎共用同一个时钟（perf_counter）
             if self._game_pending:

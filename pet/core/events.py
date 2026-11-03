@@ -115,6 +115,18 @@ class PetSay(Event):
 
 
 @dataclass
+class PresenceChanged(Event):
+    """
+    人在 / 人走。**只在变化时发**，不是每帧。
+
+    和 ControlToggled 一个套路：状态型的信号只在跳变时广播，
+    订阅方不用自己记上一次是什么。
+    """
+
+    present: bool = True
+
+
+@dataclass
 class PetGame(Event):
     """
     小游戏状态（石头剪刀布）。

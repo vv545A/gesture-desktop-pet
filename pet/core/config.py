@@ -70,6 +70,11 @@ class Config:
     swap_hands: bool = False
     face_guard: bool = True
     use_gesture_model: bool = True
+    # 在场检测：用本地人脸检测判断人在不在，人走了宠物打盹、人回来主动迎接。
+    # 只判断"有没有脸"，不存图、不识别身份。
+    presence: bool = True
+    presence_interval: float = 0.5   # 多久查一次（调低反应快、更费 CPU）
+    away_after: float = 6.0          # 多久没看到人算离开（要能容忍低头捡东西）
 
     # ---------------- 判定（与 main.py 的默认值保持一致，手感才不会割裂） ----
     hold: float = 0.5                # 悬停多久确认（单手窗口操作）

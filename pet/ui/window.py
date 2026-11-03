@@ -34,7 +34,7 @@ from ..core.bus import EventBus
 from ..core.config import Config
 from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
                            HandsSeen, PerceptionFailed, PerceptionReady,
-                           PetGame, PetSay)
+                           PetGame, PetSay, PresenceChanged)
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
@@ -136,6 +136,7 @@ class PetWindow(QWidget):
         # 这几个是"状态"，必须另一个手势或一次点击才解除。
         # 混在一起的后果很直观：比个 ✊ 让它睡，两秒后它自己醒了——那就不叫睡觉。
         self._asleep = False               # ✊ 之后的硬锁
+        self._napping = False              # 人不在，自动打盹（和 _asleep 是两回事）
         self._dance_until = 0.0            # ✌️ 跳舞的结束时刻（限时，不是永动）
         self._follow_backup = ""           # 切到跟鼠标前的模式，醒来时还原
         self._game_on = False              # 正在玩石头剪刀布（游戏时不回角落）
@@ -258,12 +259,16 @@ class PetWindow(QWidget):
         self.bus.subscribe(ControlToggled, self._on_toggle)
         self.bus.subscribe(PetSay, self._on_say)
         self.bus.subscribe(PetGame, self._on_game)
+        self.bus.subscribe(PresenceChanged, self._on_presence)
         self.bus.subscribe(PerceptionReady, self._on_ready)
         self.bus.subscribe(PerceptionFailed, self._on_failed)
 
     def _on_hands(self, ev: Event) -> None:
         assert isinstance(ev, HandsSeen)
         now = time.monotonic()
+        if ev.count:
+            # 手都举起来了，人肯定在——打盹立刻结束，不用等下一次人脸检测
+            self._napping = False
         if ev.count and ev.point:
             self._last_hand = now
             self._hand_pt = ev.point
@@ -387,6 +392,26 @@ class PetWindow(QWidget):
                 self.say(f"{ev.player} vs {ev.pet}，我赢咯　{score}", "proud")
             else:
                 self.say(f"都是{ev.player}，平局　{score}", "calm")
+
+    def _on_presence(self, ev: Event) -> None:
+        """
+        人在 / 人走。注意和 `_asleep` 是**两件不同的事**：
+
+        _asleep 是用户比 ✊ 让它睡，必须 ✋ 或点一下才醒，是"听你的"；
+        _napping 是"人不在所以打盹"，人一回来自己就醒，是"懂事"。
+
+        合成一个状态会出问题：用户让它睡下、走开、再回来，宠物会自己醒，
+        和"它听我的"这个预期正好相反。
+        """
+        assert isinstance(ev, PresenceChanged)
+        if ev.present:
+            if self._napping:
+                self._napping = False
+                self.say("你回来啦！", "happy")
+            return
+        if not self._asleep:
+            self._napping = True
+            self._set_mood("sleepy", 1e9)
 
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
@@ -627,6 +652,13 @@ class PetWindow(QWidget):
         if self._asleep:
             if self._mood != "sleepy":
                 self._set_mood("sleepy", 1e9)
+        elif self._napping:
+            # 人不在：打盹，并且飘回角落——等他回来一眼就看见它在睡觉
+            if self._mood != "sleepy":
+                self._set_mood("sleepy", 1e9)
+            if (self.cfg.follow not in ("window", "cursor") and not self._dragging
+                    and not self._ui_open() and now > self._park_until):
+                self._place_home(immediate=False)
         elif quiet > self.cfg.idle_after and not self._game_on:
             if self._mood not in ("sleepy", "shy"):
                 self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
