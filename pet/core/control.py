@@ -60,6 +60,74 @@ class ControlCenter:
     def toggle(self) -> bool:
         return self.set_enabled(not self.engine.enabled)
 
+    # ------------------------------------------------- 看人的两个能力（运行时开关）
+    # 为什么放在这里而不是各自在 UI 里改 cfg：
+    #   托盘菜单和控制面板都有这两个开关，两处各写一遍"改配置 + 落盘 + 说句话"，
+    #   迟早有一处漏掉；而且"开关拨上去了但检测器其实不存在"这种情况，
+    #   必须由知道 worker 内部状态的地方来判断，UI 层猜不出来。
+    def set_emotion(self, on: bool) -> bool:
+        """
+        情绪感知开关。返回"打开之后真的能读表情吗"。
+
+        False 的含义：配置已改（用户意图要记住），但没有可用的表情检测器——
+        `models/face_landmarker.task` 缺失时 `EmotionDetector` 会把自己禁用。
+        这时必须说清楚，否则用户会以为"开了但没效果"是程序坏了。
+        """
+        self.cfg.emotion = bool(on)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass                    # 配置目录只读也不该让开关失效
+        if not on:
+            self.bus.post(PetSay(text="好，不看你的表情了", mood="calm"))
+            return True
+        det = getattr(self.worker, "emotion", None) if self.worker is not None else None
+        if self.worker is None:
+            self.bus.post(PetSay(text="演示模式里没有摄像头，读不了表情", mood="shy"))
+            return False
+        if det is None:
+            self.bus.post(PetSay(text="表情模型没装好，我暂时读不懂表情（见 README）",
+                                mood="shy"))
+            return False
+        self._ensure_looking("看清你的表情")
+        self.bus.post(PetSay(text="好，我读读你的表情", mood="happy"))
+        return True
+
+    def set_presence(self, on: bool) -> bool:
+        """在场检测开关。返回 False 表示没有可用的人脸检测器。"""
+        self.cfg.presence = bool(on)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        if not on:
+            self.bus.post(PetSay(text="我就在这儿等着，不打盹了", mood="calm"))
+            return True
+        det = getattr(self.worker, "presence", None) if self.worker is not None else None
+        if self.worker is None:
+            self.bus.post(PetSay(text="演示模式里没有摄像头，看不到你在不在", mood="shy"))
+            return False
+        if det is None:
+            self.bus.post(PetSay(text="人脸模型没装好，我不知道你走没走开", mood="shy"))
+            return False
+        self._ensure_looking("看见你在不在")
+        self.bus.post(PetSay(text="你走了我会打盹", mood="happy"))
+        return True
+
+    def _ensure_looking(self, why: str) -> None:
+        """
+        需要摄像头的能力（游戏 / 情绪 / 在场）在识别关着的时候要用它。
+
+        为什么必须顺手打开：识别关掉之后感知线程的暂停分支每轮直接 `continue`，
+        `_game_pending` 这种"待启动标志"永远轮不到被消费 —— 菜单上勾着、
+        游戏却不开始，表现就是"点了没反应"。摄像头本来就是要开的那一步，
+        与其静默失败，不如打开它并说一句为什么。
+        """
+        if self.enabled:
+            return
+        self.set_enabled(True)
+        self.bus.post(PetSay(text=f"先把摄像头打开，才能{why}", mood="happy"))
+
     # ---------------------------------------------------------------- 小游戏
     def set_game(self, on: bool) -> bool:
         """
@@ -71,6 +139,8 @@ class ControlCenter:
         if self.worker is None or not hasattr(self.worker, "set_game"):
             self.bus.post(PetSay(text="得先有摄像头才能玩哦", mood="shy"))
             return False
+        if on:
+            self._ensure_looking("跟我玩石头剪刀布")
         ok = self.worker.set_game(on)
         self.bus.post(PetSay(text="三秒后出拳！✊石头 ✌️剪刀 ✋布" if ok else "不玩啦～",
                              mood="happy" if ok else "calm"))

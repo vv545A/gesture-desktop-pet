@@ -243,4 +243,93 @@ win.cfg.follow = "hand"
 win._on_hands(hands_at(0.1, point=(0.8, 0.8)))
 check("切回跟手后它会动（功能没被删）", win._target != before)
 
+print("== 右键入口：右键它要能弹出功能菜单 ==")
+# 用户报过"原本右键弹出的窗口里能玩石头剪刀布/看情绪，现在没法触发"。
+# 这类问题截图看不出来（菜单要真点一次才出现），只能锁事件分支：
+#   * 落在身体上 -> 吃掉事件并弹菜单（没托盘时退回控制面板）
+#   * 落在透明空白 -> 必须 ignore，让桌面弹自己的右键菜单
+from PySide6.QtCore import QPoint                                    # noqa: E402
+from PySide6.QtGui import QContextMenuEvent                         # noqa: E402
+
+win = make_window()
+win.show()
+body = QPoint(int(win.pet_cx), int(win.pet_cy))
+ev = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, body, win.mapToGlobal(body))
+win.contextMenuEvent(ev)
+check("右键它 = 有反应（没托盘时兜底弹控制面板）",
+      win._panel is not None and win._panel.isVisible())
+
+blank = QPoint(2, 2)
+ev2 = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, blank, win.mapToGlobal(blank))
+win.contextMenuEvent(ev2)
+check("点在透明空白不吞右键（交给桌面）", ev2.isAccepted() is False)
+
+print("== 控制面板：玩法入口真的在，而且点了会改状态 ==")
+from PySide6.QtCore import QEvent, Qt                                 # noqa: E402
+from PySide6.QtGui import QMouseEvent                                # noqa: E402
+
+from pet.core.control import ControlCenter                           # noqa: E402
+from pet.core.engine import GestureEngine                            # noqa: E402
+from pet.ui.panel import ControlPanel                                # noqa: E402
+
+cfg = Config()
+cfg.sprite = ""
+cfg.click_through = False
+cfg.save = lambda *a, **k: None          # 测试绝不写用户真实的 gestures.yaml
+bus = EventBus()
+engine = GestureEngine(cfg)
+control = ControlCenter(bus, engine, cfg)
+win = PetWindow(bus, cfg, control)
+win.show()
+panel = ControlPanel(win)
+keys = [k for k, _ in panel._hits]
+check("面板里有『石头剪刀布』", "game" in keys)
+check("面板里有『情绪感知』", "emotion" in keys)
+
+rect = dict(panel._hits)["emotion"]
+pos = rect.center()
+click = QMouseEvent(QEvent.Type.MouseButtonRelease, pos, pos,
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier)
+before = cfg.emotion
+panel.mouseReleaseEvent(click)
+check("点一下就切换了情绪感知", cfg.emotion is not before)
+
+# 刚点下"玩游戏"时 game.active 还是 False（要等感知线程下一帧），
+# 只看 active 的话勾选会弹回去，用户会以为没点上。
+class _FakeWorker:
+    _game_pending = True
+    game = type("G", (), {"active": False})()
+
+control.worker = _FakeWorker()
+check("刚点下游戏（还没开跑）时开关不会弹回去", panel._game_active() is True)
+check("没有感知线程时点游戏会说明原因", ControlCenter(bus, engine, cfg).set_game(True) is False)
+
+print("== 识别关着时开玩法：必须顺手打开摄像头 ==")
+# 这是"点了没反应"的根源：识别关掉后感知线程的暂停分支每轮 continue，
+# `_game_pending` 永远轮不到被消费——菜单勾着、游戏不开始。
+# 截图和日志都看不出来（没有任何报错），只能锁状态。
+
+
+class _FakeGameWorker:
+    _game_pending = False
+    emotion = object()          # 假装表情/人脸检测器都在
+    presence = object()
+
+    def set_game(self, on: bool) -> bool:
+        self._game_pending = bool(on)
+        return bool(on)
+
+
+control2 = ControlCenter(bus, engine, cfg)
+control2.worker = _FakeGameWorker()
+control2.set_enabled(False)
+check("关掉之后引擎是停的", engine.enabled is False)
+check("点游戏能进得去", control2.set_game(True) is True)
+check("顺手把摄像头打开了（不然游戏永远起不来）", engine.enabled is True)
+check("游戏确实挂上了待启动", control2.worker._game_pending is True)
+
+control2.set_enabled(False)
+check("情绪感知也会顺手开摄像头", control2.set_emotion(True) is True and engine.enabled is True)
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

@@ -109,6 +109,10 @@ class PetWindow(QWidget):
 
         self._panel = None                  # 弹出式控制面板（懒创建）
         self._bindings = None               # 手势对照表页面（懒创建）
+        # 托盘：由 app 建好之后 attach_tray() 挂上来。
+        # 右键桌宠时弹出的是**托盘那一份**菜单——只建一份，两个入口共用，
+        # 这样"手势识别/情绪感知/石头剪刀布"的勾选状态永远一致。
+        self._tray = None
         self._panel_anchor = QPointF(0, 0)  # 开面板时宠物的位置（跟随用）
         self._press_at: Optional[QPointF] = None
         self._press_target = ""             # "btn" / "body" / ""
@@ -1227,6 +1231,43 @@ class PetWindow(QWidget):
         return dx * dx + dy * dy <= 1.0
 
     # ---------------------------------------------------------------- 控制面板
+    def attach_tray(self, tray) -> None:
+        """挂上托盘（app 建好托盘后调用）：右键桌宠时弹出同一份菜单。"""
+        self._tray = tray
+
+    def contextMenuEvent(self, ev) -> None:  # noqa: N802
+        """
+        右键桌宠 = 弹出菜单（和托盘右键那份是同一个对象）。
+
+        为什么必须补这个入口：
+            桌宠没有标题栏、没有菜单栏，"功能在哪"只能靠两处被发现——
+            托盘右下角那个小图标，和"右键它本身"。之前只有托盘，
+            用户右键桌宠什么都不会发生，会以为石剪布/情绪感知这些功能没了。
+            两个入口共用一份 QMenu，勾选状态天然同步，不用写两遍同步逻辑。
+
+        点在透明空白上时不吞事件：让桌面自己处理右键（否则等于在宠物周围
+        挖了一块"右键黑洞"，在桌面上右键菜单会失效）。
+        """
+        pos = ev.pos()
+        if not (self._in_body(pos) or self._in_button(pos)):
+            ev.ignore()
+            return
+
+        tray = getattr(self, "_tray", None)
+        menu = getattr(tray, "menu", None)
+        if menu is None:
+            # 没有托盘（单元测试 / headless / 托盘创建失败）：退回控制面板，
+            # 至少让用户拿得到开关，而不是右键了没反应。
+            self.open_panel()
+            ev.accept()
+            return
+
+        if self._panel is not None and self._panel.isVisible():
+            self._close_panel()          # 菜单和面板不同时开着，避免互相遮挡
+        self._touch(time.monotonic())
+        menu.popup(ev.globalPos())
+        ev.accept()
+
     def open_panel(self) -> None:
         """点桌宠 -> 弹出开关面板（延迟导入：不开面板就不加载这套代码）。"""
         from .panel import ControlPanel
@@ -1267,7 +1308,13 @@ class PetWindow(QWidget):
     # ---------------------------------------------------------------- 鼠标
     def mousePressEvent(self, ev) -> None:  # noqa: N802
         if ev.button() != Qt.MouseButton.LeftButton:
-            ev.accept()
+            # 右键落在宠物身上：吃掉这一下，接下来由 contextMenuEvent 弹菜单
+            # （Qt 会紧接着发 contextMenuEvent）。落在透明空白上就 ignore，
+            # 让桌面自己弹它的右键菜单——窗口比宠物大一圈，不能拿空白也当自己。
+            if ev.button() == Qt.MouseButton.RightButton and self._in_body(ev.position()):
+                ev.accept()
+            else:
+                ev.ignore()
             return
         pos = ev.position()
         self._press_at = pos

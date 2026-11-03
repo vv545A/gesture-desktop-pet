@@ -119,6 +119,7 @@ class PetTray:
         # 状态镜像：不管是谁改的（桌宠按钮 / 面板 / 双手捏合），菜单跟着变。
         # 事件 + 每次展开菜单时再同步一次 —— 面板改的"穿透/跟随方式"不走事件，
         # 展开时补一次最省事，也不会漏。
+        self.menu = menu                # 桌宠右键用的也是这一份（见 window.contextMenuEvent）
         self._menu = menu
         menu.aboutToShow.connect(self._sync_menu)
         bus.subscribe(ControlToggled, self._on_toggle_event)
@@ -147,9 +148,13 @@ class PetTray:
         self.act_through.setChecked(bool(self.window.cfg.click_through))
         for key, act in self._follow_actions.items():
             act.setChecked(self.window.cfg.follow == key)
-        # 游戏可能因为退出/超时自己结束，勾选要跟着真实状态，不能只信点击
-        game = getattr(getattr(self.control, "worker", None), "game", None)
-        self.act_game.setChecked(bool(getattr(game, "active", False)))
+        # 游戏可能因为退出/超时自己结束，勾选要跟着真实状态，不能只信点击。
+        # `_game_pending` 也要算进去：点下去之后要等主循环下一帧才真正 start()，
+        # 如果只看 game.active，菜单立刻重开时勾会掉——看起来就像"点了没反应"。
+        worker = getattr(self.control, "worker", None)
+        game = getattr(worker, "game", None)
+        self.act_game.setChecked(bool(getattr(game, "active", False))
+                                 or bool(getattr(worker, "_game_pending", False)))
 
         self.act_emotion.setChecked(bool(self.window.cfg.emotion))
         self.act_presence.setChecked(bool(self.window.cfg.presence))
@@ -162,12 +167,23 @@ class PetTray:
                 f"亲密度：{b.level_name} · {b.points:.0f} 分 · 第 {bond.days_together()} 天")
 
     def _toggle_emotion(self, checked: bool) -> None:
+        if self.control is not None:
+            # 由 ControlCenter 判断"检测器到底在不在"，缺模型时它会说清楚原因
+            ok = self.control.set_emotion(checked)
+            if checked and not ok:
+                self.act_emotion.setChecked(False)   # 别留个假勾
+            return
         self.window.cfg.emotion = bool(checked)
-        self.window.cfg.save()      # 落盘，下次启动保持
+        self.window.cfg.save()
         self.bus.post(PetSay(text="好，我读读你的表情" if checked else "不看你表情了",
                              mood="happy"))
 
     def _toggle_presence(self, checked: bool) -> None:
+        if self.control is not None:
+            ok = self.control.set_presence(checked)
+            if checked and not ok:
+                self.act_presence.setChecked(False)
+            return
         self.window.cfg.presence = bool(checked)
         self.window.cfg.save()
         self.bus.post(PetSay(text="你走了我会打盹" if checked else "我就在这儿等着",

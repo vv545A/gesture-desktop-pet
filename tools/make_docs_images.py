@@ -337,7 +337,7 @@ def make_panel(path: str) -> None:
     for i, (img, cap) in enumerate((
             (pet_on, "① 运行中：右上角 ×"),
             (pet_off, "② 关掉后：按钮变绿色 ▶，摄像头已释放"),
-            (panel_img, "③ 点桌宠：控制面板（开关/跟随/退出）"))):
+            (panel_img, "③ 点桌宠：控制面板（开关/跟随/玩法/退出）"))):
         x = 20 + i * (cell_w + gap)
         p.setPen(QPen(LINE, 1))
         p.setBrush(QColor(250, 252, 254))

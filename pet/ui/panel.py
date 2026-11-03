@@ -41,6 +41,10 @@ MARGIN = 9          # 给阴影留的边
 PAD = 12
 WIDTH = 236         # 四段式跟随方式要放得下"跟鼠标"三个字，比三段式宽一圈
 
+#: 用「胶囊开关」画法的行；其余 key 一律画成按钮。绘制和点击共用这一份，
+#: 不会出现"看着像开关、点了却按按钮逻辑走"的错位。
+_SWITCHES = ("enabled", "through", "game", "emotion")
+
 
 class ControlPanel(QWidget):
     """点桌宠弹出的开关面板。只做"读状态 + 回调"，不存状态。"""
@@ -90,6 +94,14 @@ class ControlPanel(QWidget):
         y += 18
         self._seg = QRectF(x, y, w, 26)
         y += 36
+
+        # 玩法：这两项以前只在托盘右键菜单里有，用户点开面板找不到，
+        # 就会以为功能没了。摆在同一块面板里，一次点击就够。
+        self._play_label = QRectF(x + 2, y, w, 14)
+        y += 18
+        for key in ("game", "emotion"):
+            self._hits.append((key, QRectF(x, y, w, 30)))
+            y += 40
 
         for key in ("help", "quit"):
             self._hits.append((key, QRectF(x, y, w, 27)))
@@ -141,17 +153,18 @@ class ControlPanel(QWidget):
                    f"{self.cfg.pet_name} · 控制台")
 
         for key, rect in self._hits:
-            if key in ("enabled", "through"):
+            if key in _SWITCHES:
                 self._paint_switch_row(p, key, rect)
             else:
                 self._paint_button(p, key, rect)
 
         self._paint_bond(p)
         self._paint_segment(p)
+        self._paint_play_label(p)
 
         # 底部状态：摄像头到底有没有在工作，是用户最关心的一件事
         p.setFont(self._font_small)
-        if self.control.enabled:
+        if getattr(self.control, "enabled", True):
             p.setPen(QColor(108, 150, 122))
             note = "摄像头工作中"
         else:
@@ -161,8 +174,7 @@ class ControlPanel(QWidget):
         p.end()
 
     def _paint_switch_row(self, p: QPainter, key: str, rect: QRectF) -> None:
-        on = self.control.enabled if key == "enabled" else bool(self.cfg.click_through)
-        label = "手势识别" if key == "enabled" else "点击穿透"
+        on, label = self._switch_state(key)
 
         if self._hover == key:
             p.setPen(Qt.PenStyle.NoPen)
@@ -184,6 +196,38 @@ class ControlPanel(QWidget):
         p.setBrush(QColor(255, 255, 255))
         d = th - 4
         p.drawEllipse(QPointF(tx + (tw - d - 2 if on else 3) + d / 2, ty + th / 2), d / 2, d / 2)
+
+    def _switch_state(self, key: str) -> Tuple[bool, str]:
+        """一行开关的「状态 + 文案」。状态一律从真源头读，面板自己不存。"""
+        if key == "enabled":
+            # control 可以为 None（单元测试 / headless）：面板照样能画，
+            # 只是这个开关没有可拨的东西，不能因此抛异常把整个界面带崩。
+            return bool(getattr(self.control, "enabled", True)), "手势识别"
+        if key == "through":
+            return bool(self.cfg.click_through), "点击穿透"
+        if key == "game":
+            return self._game_active(), "石头剪刀布"
+        return bool(self.cfg.emotion), "情绪感知"
+
+    def _game_active(self) -> bool:
+        """
+        游戏是不是（即将）在玩。
+
+        `game.active` 要等感知线程下一帧才变 True，而点下去的瞬间只是置了
+        `_game_pending`。只看 active 的话，打开面板会看到勾弹回去，
+        像"点了没生效"。
+        """
+        worker = getattr(self.control, "worker", None)
+        game = getattr(worker, "game", None)
+        return bool(getattr(game, "active", False)) or bool(
+            getattr(worker, "_game_pending", False))
+
+    def _paint_play_label(self, p: QPainter) -> None:
+        p.setPen(TEXT_DIM)
+        p.setFont(self._font_small)
+        p.drawText(self._play_label,
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "玩法")
 
     def _paint_bond(self, p: QPainter) -> None:
         """
@@ -297,7 +341,8 @@ class ControlPanel(QWidget):
             ev.accept()
             return
         if key == "enabled":
-            self.control.toggle()
+            if self.control is not None:
+                self.control.toggle()
         elif key == "through":
             on = not bool(self.cfg.click_through)
             self.cfg.click_through = on
@@ -306,6 +351,17 @@ class ControlPanel(QWidget):
                 # 穿透一开就点不到桌宠了，面板必须马上收起来，并用托盘提示
                 self.close()
                 self.bus.post(PetSay(text="我先隐形啦，右键托盘图标能叫我回来", mood="shy"))
+        elif key == "game":
+            if self.control is None:
+                self.bus.post(PetSay(text="得先有摄像头才能玩哦", mood="shy"))
+            else:
+                self.control.set_game(not self._game_active())
+        elif key == "emotion":
+            if self.control is not None:
+                # 由 ControlCenter 判断检测器在不在；缺模型时它会说清楚
+                self.control.set_emotion(not bool(self.cfg.emotion))
+            else:
+                self.cfg.emotion = not bool(self.cfg.emotion)
         elif key in ("hand", "cursor", "window", "corner"):
             self.cfg.follow = key
             say = {"hand": "好，我跟着你的手",

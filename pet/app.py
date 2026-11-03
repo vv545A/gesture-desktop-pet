@@ -334,6 +334,9 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
     control.attach_quit(quit_all)
 
     tray = PetTray(app, window, bus, engine, quit_all)   # noqa: F841  (保持引用)
+    # 右键桌宠弹的是托盘那份菜单：挂上去之后"右键桌宠"和"右键托盘图标"
+    # 是同一个入口的两种触发方式，不会再出现"右键宠物没反应"。
+    window.attach_tray(tray)
     tray.show()
 
     # 总线要到主线程来消化：16ms 一次，和渲染同频
