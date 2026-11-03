@@ -12,8 +12,9 @@ mediapipe>=1.1.1
 opencv-contrib-python>=5.0.0.93
 numpy>=2.5.3
 pillow>=12.3.0
+PyYAML>=6.0.3
 
 # ---- 桌宠界面层（只有 pet/ 需要；main.py 的 HUD 版不用）----
-# PyQt6 = GPL v3。自己用没问题；要发布/商用请换 PySide6（LGPL）或买商业授权，
-# 换绑定只需要改 pet/ui/ 里的 import，其它层不依赖 Qt。
-PyQt6>=6.6
+# PySide6 = LGPL，可以自由分发；PyQt6 是 GPL，发布/商用要么开源要么买授权。
+# 换绑定成本很低：ui/ 之外的代码不依赖 Qt，整个感知层和判定层是纯 Python。
+PySide6-Essentials>=6.6

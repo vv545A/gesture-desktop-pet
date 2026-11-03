@@ -25,8 +25,8 @@ import os
 from dataclasses import dataclass, fields
 from typing import Tuple
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QLinearGradient,
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QLinearGradient,
                          QPainter, QPainterPath, QPen, QPixmap, QRadialGradient)
 
 # ---------------------------------------------------------------- 字体
@@ -121,6 +121,10 @@ class PetPose:
                              bob=0.08),
             "sleepy":  cls(eye_open=0.12, mouth=0.15, glow=0.0, bob=-0.02),
             "calm":    cls(mouth=0.30, blush=0.22),
+            # 跳舞的基调：开心 + 张嘴 + 大幅度歪头。真正的动感由 window._tick
+            # 叠相位（tilt/bob/squash 的正弦），这里只决定"定格在哪一帧"。
+            "dance":   cls(mouth=0.80, happy_eyes=True, blush=0.85,
+                           squash=0.14, bob=0.10, tilt=6.0),
         }
         return table.get(mood, cls())
 

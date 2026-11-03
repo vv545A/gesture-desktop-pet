@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -37,6 +38,8 @@ from ..core.engine import GestureEngine
 from ..core.events import (ControlToggled, HandsSeen, PerceptionFailed,
                            PerceptionReady)
 from ..intent.router import IntentRouter
+
+log = logging.getLogger(__name__)
 
 
 class PerceptionWorker(threading.Thread):
@@ -74,15 +77,15 @@ class PerceptionWorker(threading.Thread):
     def run(self) -> None:
         tracker = None
         try:
-            print("[perception] 加载模型…")
+            log.info("加载模型…")
             t0 = time.perf_counter()
             tracker = HandTracker(
                 HAND_MODEL, num_hands=2, min_detect=0.5,
                 hand_mode=self.cfg.hands, swap_hands=self.cfg.swap_hands,
                 gesture_model=GESTURE_MODEL if self.cfg.use_gesture_model else None,
             )
-            print(f"[perception] 就绪 {time.perf_counter() - t0:.2f}s"
-                  f"（{'手势模型' if tracker.use_model else '几何规则'}）")
+            log.info("就绪 %.2fs（%s）", time.perf_counter() - t0,
+                     "手势模型" if tracker.use_model else "几何规则")
 
             face_guard = None
             if self.cfg.face_guard:
@@ -92,13 +95,13 @@ class PerceptionWorker(threading.Thread):
 
             self._loop(tracker, face_guard)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            # exception 会带上完整栈：感知线程的崩溃是最难复现的一类
+            log.exception("感知线程异常")
             self.bus.post(PerceptionFailed(message=f"感知线程异常：{e}"))
         finally:
             if tracker is not None:
                 tracker.close()
-            print("[perception] 已停止")
+            log.info("已停止")
 
     # ---------------------------------------------------------------- 主循环
     def _loop(self, tracker: HandTracker, face_guard) -> None:
@@ -120,7 +123,7 @@ class PerceptionWorker(threading.Thread):
                     except Exception:
                         pass
                     cap = None
-                    print("[perception] 已释放摄像头（手势识别关闭）")
+                    log.info("已释放摄像头（手势识别关闭）")
                 last_ui = 0.0
                 time.sleep(0.1)
                 continue
@@ -135,7 +138,7 @@ class PerceptionWorker(threading.Thread):
                             message=f"打不开摄像头 {self.cfg.cam}（被其它程序占用？）"))
                     time.sleep(1.0)          # 隔一秒重试，插上摄像头就能自己好
                     continue
-                print("[perception] 摄像头已打开")
+                log.info("摄像头已打开")
                 if first_ready:
                     first_ready = False
                     self.bus.post(PerceptionReady(message="摄像头就绪"))
@@ -146,7 +149,7 @@ class PerceptionWorker(threading.Thread):
 
             ok, frame = cap.read()
             if not ok:
-                print("[perception] 读帧失败，重连摄像头")
+                log.warning("读帧失败，重连摄像头")
                 try:
                     cap.release()
                 except Exception:
@@ -201,7 +204,7 @@ class PerceptionWorker(threading.Thread):
                 if self.fps < 5:
                     slow += 1
                     if slow >= 3:
-                        print(f"[perception] 帧率只有 {self.fps:.1f}，摄像头可能被占用")
+                        log.warning("帧率只有 %.1f，摄像头可能被占用", self.fps)
                         slow = 0
 
         if cap is not None:

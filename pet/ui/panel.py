@@ -19,9 +19,9 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QWidget
 
 from ..core.events import PetSay
 from .paint import ui_font
@@ -210,7 +210,7 @@ class ControlPanel(QWidget):
     # ---------------------------------------------------------------- 交互
     def popup_near(self, anchor) -> None:
         """放在桌宠旁边：优先左边，左边没地方就右边。"""
-        from PyQt6.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication
 
         scr = QGuiApplication.primaryScreen()
         area = scr.availableGeometry() if scr else None

@@ -15,6 +15,7 @@ calibration/
 
 # 本机配置：摄像头序号、跟随增益因人而异，不该覆盖别人的
 pet_config.json
+gestures.yaml
 
 # 开发会话记忆（与项目代码无关）
 .workbuddy/

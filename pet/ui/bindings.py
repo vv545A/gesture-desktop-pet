@@ -20,13 +20,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Dict
 
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout,
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QPolygonF
+from PySide6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout,
                              QLabel, QPushButton, QTabWidget, QVBoxLayout,
                              QWidget)
 
@@ -239,7 +240,7 @@ class BindingsDialog(QDialog):
         return page
 
     def _center(self) -> None:
-        from PyQt6.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication
 
         scr = QGuiApplication.primaryScreen()
         if scr is None:
@@ -275,7 +276,7 @@ class BindingsDialog(QDialog):
         try:
             self.cfg.save()
         except Exception as e:
-            print(f"[bindings] 保存配置失败：{e}")
+            logging.getLogger(__name__).error("保存配置失败：%s", e)
 
     def _save(self) -> None:
         self._apply(self._collect())
@@ -289,5 +290,5 @@ class BindingsDialog(QDialog):
         try:
             self.cfg.save()
         except Exception as e:
-            print(f"[bindings] 保存配置失败：{e}")
+            logging.getLogger(__name__).error("保存配置失败：%s", e)
         self.bus.post(PetSay(text="都改回出厂设置啦", mood="calm"))

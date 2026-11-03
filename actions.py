@@ -14,15 +14,25 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sys
 import time
 from ctypes import wintypes
 
-if sys.platform != "win32":
-    raise RuntimeError("本项目依赖 Windows API（keybd_event / mouse_event）")
+log = logging.getLogger(__name__)
 
-user32 = ctypes.windll.user32
+# 平台守卫：按键注入（keybd_event / mouse_event）只有 Windows 有。
+# 这里**故意不抛异常**——桌宠的窗口、动画、手势识别全是跨平台的，
+# 只有"往系统里发按键"这一层做不到。缺了它也应当能跑，只是动作降级成
+# "识别出来了但发不出去"，而不是整个程序拒绝启动。
+WINDOWS = sys.platform == "win32"
+user32 = ctypes.windll.user32 if WINDOWS else None
+
+
+def has_system_actions() -> bool:
+    """当前平台能不能真的发按键。给界面/日志用，避免"看起来能用其实没用"。"""
+    return user32 is not None
 
 KEYEVENTF_KEYUP = 0x0002
 MOUSEEVENTF_WHEEL = 0x0800
@@ -85,6 +95,8 @@ def combo(modifier: int, key: int, hold: float = 0.02) -> None:
 
 def scroll(steps: float) -> None:
     """滚动滚轮。正数向上，负数向下，1 步 = 一格的 1/3。"""
+    if not WINDOWS:
+        return
     delta = int(steps * WHEEL_DELTA)
     if delta == 0:
         return
@@ -182,10 +194,13 @@ def zoom(notches: int, min_interval: float = 0.06) -> str:
         "blocked"   目标是桌面 / 资源管理器，跳过（否则会改图标大小）
         "throttled" 节流中，没发
         "none"      步长为 0
+        "unsupported" 当前平台没有按键注入能力
 
     关键：Ctrl 必须在 finally 里释放。一旦 Ctrl 卡在按下状态，之后所有按键
     都会变成组合键，等于把键盘搞坏——这是必须兜住的。
     """
+    if not WINDOWS:
+        return "unsupported"
     if not notches:
         return "none"
 
@@ -195,7 +210,7 @@ def zoom(notches: int, min_interval: float = 0.06) -> str:
         now = time.perf_counter()
         if now - _last_block_log[0] > 3.0:
             _last_block_log[0] = now
-            print("[zoom] 跳过：桌面/资源管理器里 Ctrl+滚轮会改图标大小")
+            log.info("跳过缩放：桌面/资源管理器里 Ctrl+滚轮会改图标大小")
         return "blocked"
 
     now = time.perf_counter()
@@ -221,11 +236,13 @@ def zoom_reset() -> str:
 
     和 zoom() 一样，Ctrl 必须在 finally 里松开——Ctrl 卡住会把键盘搞坏。
     """
+    if not WINDOWS:
+        return "unsupported"
     if icon_zoom_target():
         now = time.perf_counter()
         if now - _last_block_log[0] > 3.0:
             _last_block_log[0] = now
-            print("[zoom] 跳过重置：桌面/资源管理器里 Ctrl+0 没有意义")
+            log.info("跳过缩放复位：桌面/资源管理器里 Ctrl+0 没有意义")
         return "blocked"
     _down(VK["ctrl"])
     try:
@@ -365,20 +382,68 @@ NO_WINDOW_HINT = "没有可以操作的窗口（先在任务栏点一下目标�
 
 def run_window_action(name: str) -> str:
     """执行一个窗口动作，返回结果码；未知名字返回 "unknown"。"""
+    if not WINDOWS:
+        return "unsupported"
     fn = WINDOW_ACTIONS.get(name)
     if fn is None:
-        print(f"[warn] 未知窗口动作: {name}")
+        log.warning("未知窗口动作: %s", name)
         return "unknown"
     try:
         return fn() or "ok"
     except Exception as e:
-        print(f"[error] 窗口动作 {name} 失败: {e}")
+        log.error("窗口动作 %s 失败: %s", name, e)
         return "failed"
+
+
+# ------------------------------------------------------------------ 浏览器
+# 白名单：打开网址算是"对系统产生副作用"的动作，只放行这里列出的站点。
+# 为什么一定要白名单：配置是明文文件、谁都能改；如果 `open_browser` 接受任意
+# URL，等于把"比个手势"变成"任何写着配置的人都能让你打开任意页面"的入口。
+# 安全边界写在代码里，配置只能在这个集合内部挑。
+BROWSER_ALLOWLIST = (
+    "https://www.bing.com/",
+    "https://cn.bing.com/",
+    "https://www.baidu.com/",
+    "https://www.google.com/",
+)
+
+#: 👍 默认打开的页面（可在配置里用 url 覆盖，但必须命中白名单）
+DEFAULT_BROWSER_URL = "https://www.bing.com/"
+
+
+def open_url(url: str) -> bool:
+    """
+    用系统默认浏览器打开白名单内的网址。
+
+    webbrowser 是标准库、三大平台都有，所以这一个动作**不需要 Windows**。
+    返回 False 表示"被拦下了"或"没打开"，调用方据此给出提示，
+    而不是静默失败让人以为手势没识别到。
+    """
+    target = (url or "").strip()
+    if not target:
+        return False
+
+    low = target.lower()
+    if not low.startswith(("http://", "https://")):
+        return False                    # 挡掉 file: / javascript: 等非网页协议
+
+    if not any(low.startswith(allowed.lower()) for allowed in BROWSER_ALLOWLIST):
+        log.warning("网址不在白名单里，已拒绝: %s", target)
+        return False
+
+    try:
+        import webbrowser
+        return bool(webbrowser.open(target))
+    except Exception as e:
+        log.error("打开浏览器失败: %s", e)
+        return False
 
 
 # ------------------------------------------------------------------ 动作表
 # 键名 -> 执行函数。想改映射，只动这里（或 main.py 里的 GESTURE_ACTIONS）。
 ACTIONS = {
+    # 唯一一个跨平台动作：不注入按键，只调系统默认浏览器
+    "open_browser": lambda: open_url(DEFAULT_BROWSER_URL),
     "play_pause": lambda: tap(VK["play_pause"]),
     "mute": lambda: tap(VK["vol_mute"]),
     "vol_up": lambda: tap(VK["vol_up"], 3),
@@ -400,11 +465,15 @@ def run_action(name: str) -> bool:
     """执行一个具名动作，返回是否成功。"""
     fn = ACTIONS.get(name)
     if fn is None:
-        print(f"[warn] 未知动作: {name}")
+        log.warning("未知动作: %s", name)
+        return False
+    # open_browser 走 webbrowser，非 Windows 也能用；其余全靠 keybd_event
+    if not WINDOWS and name != "open_browser":
+        log.warning("当前平台不支持按键动作: %s", name)
         return False
     try:
         fn()
         return True
     except Exception as e:
-        print(f"[error] 执行 {name} 失败: {e}")
+        log.error("执行 %s 失败: %s", name, e)
         return False

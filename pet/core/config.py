@@ -11,12 +11,40 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+try:
+    import yaml
+except ImportError:                     # 极小概率：装依赖时漏了 PyYAML
+    yaml = None
+
+log = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_CONFIG = os.path.join(HERE, "pet_config.json")
+
+#: 默认配置文件用 YAML 而不是 JSON。
+#: 理由很实际：调手感要动十几个数值（悬停时长、跟随增益、冷却……），
+#: JSON 不能写注释，改完过两个月自己都看不懂当初为什么设成 0.45。
+DEFAULT_CONFIG = os.path.join(HERE, "gestures.yaml")
+
+#: 旧版配置文件。存在时自动读它并落成 YAML，不用用户手动搬。
+LEGACY_CONFIG = os.path.join(HERE, "pet_config.json")
+
+#: 生成新配置时写进文件头的说明。yaml.safe_dump 不会保留注释，
+#: 所以这段是拼在 dump 结果前面的纯文本。
+CONFIG_HEADER = """\
+# ============================================================
+#  GesturePet 配置文件
+#
+#  改完保存、重启程序即可生效，不需要动代码。
+#  只写你想改的项；没写的会自动用程序里的默认值。
+#  bindings 留空 = 用默认手势表（✌️跳舞 / ✊睡觉 / ✋唤醒 / ☝️跟随 / 👍浏览器）
+# ============================================================
+
+"""
 
 # 模型路径沿用主程序那一套（桌面文件夹相对定位，打包后也不会错）
 MODEL_DIR = os.path.join(HERE, "models")
@@ -101,30 +129,76 @@ class Config:
     dry_run: bool = False            # 只判不发（等价 main.py --test）
 
     # ---------------------------------------------------------------- 持久化
-    def save(self, path: str = DEFAULT_CONFIG) -> None:
+    @staticmethod
+    def _read(path: str) -> Dict[str, Any]:
+        """按扩展名选解析器：.yaml/.yml 走 YAML，其余走 JSON。"""
+        use_yaml = path.lower().endswith((".yaml", ".yml")) and yaml is not None
+        with open(path, "r", encoding="utf-8") as f:
+            return (yaml.safe_load(f) if use_yaml else json.load(f)) or {}
+
+    @staticmethod
+    def _dump(data: Dict[str, Any], path: str) -> None:
+        use_yaml = path.lower().endswith((".yaml", ".yml")) and yaml is not None
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+            if use_yaml:
+                f.write(CONFIG_HEADER)
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False,
+                               default_flow_style=False)
+            else:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def save(self, path: str = DEFAULT_CONFIG) -> None:
+        self._dump(asdict(self), path)
 
     @classmethod
-    def load(cls, path: str = DEFAULT_CONFIG) -> "Config":
-        """读 JSON；文件不存在就写一份默认的，方便用户直接改。"""
+    def load(cls, path: Optional[str] = None) -> "Config":
+        """
+        读配置。查找顺序：
+            1. 显式传入的 path（命令行 --config）
+            2. gestures.yaml（新默认）
+            3. pet_config.json（旧版，读到就顺手迁移成 YAML）
+            4. 都没有 -> 生成一份带注释的 gestures.yaml
+
+        读取失败**不让程序崩**：退回默认值 + 一句能看懂的话。
+        配置文件被手改坏是常态，那不该等于"打不开程序"。
+        """
         cfg = cls()
-        if os.path.exists(path):
+        target = path or DEFAULT_CONFIG
+
+        source: Optional[str] = None
+        if path:
+            source = path if os.path.exists(path) else None
+        elif os.path.exists(target):
+            source = target
+        elif os.path.exists(LEGACY_CONFIG):
+            source = LEGACY_CONFIG
+
+        if source is None:
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data: Dict[str, Any] = json.load(f)
-                known = {f.name for f in fields(cls)}
-                for k, v in data.items():
-                    if k in known:                 # 忽略改名/删除后残留的旧键
-                        setattr(cfg, k, v)
+                cfg.save(target)
+                log.info("已生成默认配置 %s", target)
             except Exception as e:
-                print(f"[config] 读取失败，用默认值：{e}")
-        else:
+                log.error("生成配置失败，用默认值：%s", e)
+            return cfg
+
+        try:
+            data = cls._read(source)
+            known = {f.name for f in fields(cls)}
+            for k, v in data.items():
+                if k in known:                 # 忽略改名/删除后残留的旧键
+                    setattr(cfg, k, v)
+        except Exception as e:
+            log.warning("读取 %s 失败，用默认值：%s", os.path.basename(source), e)
+
+        # 旧 JSON 自动迁移。只在"没指定路径、且新文件还不存在"时做，
+        # 免得把用户显式指定的路径也复制一份出来。
+        if source == LEGACY_CONFIG and not os.path.exists(target):
             try:
-                cfg.save(path)
-                print(f"[config] 已生成默认配置 {path}")
+                cfg.save(target)
+                log.info("已把旧配置迁移到 %s", os.path.basename(target))
             except Exception as e:
-                print(f"[config] 生成配置失败：{e}")
+                log.warning("迁移配置失败（不影响运行）：%s", e)
+
         return cfg
 
     def override(self, **kw: Any) -> "Config":

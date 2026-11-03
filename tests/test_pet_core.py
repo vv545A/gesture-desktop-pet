@@ -172,15 +172,28 @@ check("捏合瞬间不当作音乐手势",
       mapping.resolve("both", "PINCH") is None)
 
 # ---------------------------------------------------------------- 映射
-print("== 映射表：单手=窗口 ==")
+print("== 映射表：单手=宠物互动 ==")
 r = mapping.resolve("right", "POINT")
 l = mapping.resolve("left", "POINT")
-check("右手食指 -> 贴右半屏", r is not None and r.key == "win_snap_right", f"({r.key})")
-check("左手食指 -> 贴左半屏", l is not None and l.key == "win_snap_left", f"({l.key})")
+check("食指 -> 跟随鼠标", r is not None and r.key == "pet:follow", f"({r.key})")
+check("左手食指同样跟随", l is not None and l.key == "pet:follow", f"({l.key})")
 mx = mapping.resolve("right", "OPEN_PALM")
-check("张开手掌 -> 最大化/还原", mx is not None and mx.key == "win_max", f"({mx.key})")
+check("张开手掌 -> 唤醒", mx is not None and mx.key == "pet:wake", f"({mx.key})")
 fist = mapping.resolve("left", "FIST")
-check("握拳 -> 最小化", fist is not None and fist.key == "win_min", f"({fist.key})")
+check("握拳 -> 睡觉", fist is not None and fist.key == "pet:sleep", f"({fist.key})")
+vic = mapping.resolve("right", "VICTORY")
+check("剪刀手 -> 跳舞", vic is not None and vic.key == "pet:dance", f"({vic.key})")
+thumb = mapping.resolve("right", "THUMB_UP")
+check("点赞 -> 打开浏览器（默认表唯一带系统副作用的手势）",
+      thumb is not None and thumb.key == "open_browser", f"({thumb.key})")
+
+# 这条是产品红线：三个纯宠物手势不该牵动任何系统状态，
+# 将来谁手滑把 pet:sleep 换成 win_min，这里要立刻红。
+_pet_only = ("VICTORY", "FIST", "OPEN_PALM", "POINT")
+check("宠物互动手势不碰系统",
+      all(mapping.resolve(s, g).key.startswith("pet:")
+          for s in ("left", "right") for g in _pet_only))
+
 pat = mapping.resolve("right", "PINCH")
 check("单手捏合只摸宠物（不碰系统）", pat is not None and pat.key.startswith("pet:"),
       f"({pat.key})")
@@ -268,29 +281,33 @@ except OSError:
 # ---------------------------------------------------------------- 手势绑定
 print("== 手势绑定（对照表页面）==")
 mapping.apply_bindings({})
-check("默认 右手✋ = 最大化", mapping.resolve("right", "OPEN_PALM").key == "win_max")
+check("默认 右手✋ = 唤醒", mapping.resolve("right", "OPEN_PALM").key == "pet:wake")
 check("默认 双手✊ = 静音", mapping.resolve("both", "FIST").key == "mute")
 
 mapping.apply_bindings({"right:OPEN_PALM": "win_min", "both:FIST": "play_pause"})
-check("改绑 右手✋", mapping.resolve("right", "OPEN_PALM").key == "win_min")
+check("改绑 右手✋ 到窗口动作", mapping.resolve("right", "OPEN_PALM").key == "win_min")
 check("改绑 双手✊", mapping.resolve("both", "FIST").key == "play_pause")
-check("没改的 左手✋ 仍是默认", mapping.resolve("left", "OPEN_PALM").key == "win_max")
+check("没改的 左手✋ 仍是默认", mapping.resolve("left", "OPEN_PALM").key == "pet:wake")
 check("台词跟着动作走", "收起来" in mapping.resolve("right", "OPEN_PALM").bubble)
 
 # 左手有一条"没有就用右手"的 fallback，所以取消绑定必须能被真正关掉
 mapping.apply_bindings({"left:VICTORY": ""})
 check("取消绑定不会被右手继承", mapping.resolve("left", "VICTORY") is None)
-check("取消后右手✌️ 照旧", mapping.resolve("right", "VICTORY").key == "alt_tab")
+check("取消后右手✌️ 照旧", mapping.resolve("right", "VICTORY").key == "pet:dance")
 
 mapping.apply_bindings({"right:FIST": "根本没有这个动作"})
-check("动作名拼错时保持默认", mapping.resolve("right", "FIST").key == "win_min")
+check("动作名拼错时保持默认", mapping.resolve("right", "FIST").key == "pet:sleep")
 
 mapping.apply_bindings({"both:FIST": ""})
 check("双手也能取消", mapping.resolve("both", "FIST") is None)
 
 mapping.apply_bindings({})
-check("恢复默认", mapping.resolve("right", "OPEN_PALM").key == "win_max"
+check("恢复默认", mapping.resolve("right", "OPEN_PALM").key == "pet:wake"
       and mapping.resolve("both", "FIST").key == "mute")
+
+# 窗口动作没从目录里删掉，只是默认不绑——用户随时能改回去
+check("窗口动作仍可选用", "win_max" in mapping.ACTION_CATALOG
+      and "win_snap_left" in mapping.ACTION_CATALOG)
 
 default_map = mapping.default_bindings()
 check("默认共 20 条（14 单手 + 6 双手）", len(default_map) == 20)

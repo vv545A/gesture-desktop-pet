@@ -17,8 +17,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QAction, QActionGroup, QIcon
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from ..core.bus import EventBus
 from ..core.engine import GestureEngine
