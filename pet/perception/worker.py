@@ -71,22 +71,21 @@ class PerceptionWorker(threading.Thread):
         self._game_pending = False     # 待启动：由主循环用统一时钟启动
         self._game_was_active = False  # 上一帧是否在游戏里（用来发"结束"那一次）
 
-        # ---- 在场检测（可选）----
-        # 模型缺失/加载失败时 enabled=False，这里就不挂，主流程完全不受影响
+        # ---- 在场检测 / 情绪感知 ----
+        # 检测器**常驻创建**，是否真的调用由 cfg 决定（每帧读一次）。
+        # 为什么不按 cfg 决定创建：右键菜单能随时开关，若关闭时不创建对象，
+        # 打开开关之后就没有东西可用了，只能重启程序——那就不叫开关了。
         self.presence = None
-        if self.cfg.presence:
-            det = PresenceDetector(
-                FACE_MODEL, min_conf=0.5,
-                interval=self.cfg.presence_interval,
-                away_after=self.cfg.away_after,
-            )
-            self.presence = det if det.enabled else None
+        det = PresenceDetector(
+            FACE_MODEL, min_conf=0.5,
+            interval=self.cfg.presence_interval,
+            away_after=self.cfg.away_after,
+        )
+        self.presence = det if det.enabled else None
 
-        # ---- 情绪感知（可选）----
         self.emotion = None
-        if self.cfg.emotion:
-            emo = EmotionDetector(EMOTION_MODEL, interval=self.cfg.emotion_interval)
-            self.emotion = emo if emo.enabled else None
+        emo = EmotionDetector(EMOTION_MODEL, interval=self.cfg.emotion_interval)
+        self.emotion = emo if emo.enabled else None
 
     # ---------------------------------------------------------------- 生命周期
     def stop(self) -> None:
@@ -240,13 +239,13 @@ class PerceptionWorker(threading.Thread):
             now = time.perf_counter()
 
             # 在场检测：内部自己降到 2Hz，只在"人来了/人走了"那一刻返回非 None
-            if self.presence is not None:
+            if self.cfg.presence and self.presence is not None:
                 changed = self.presence.update(frame, now, has_hand=bool(hands))
                 if changed is not None:
                     self.bus.post(PresenceChanged(present=changed))
 
             # 情绪感知：内部 1Hz，只在情绪真的变了时返回
-            if self.emotion is not None:
+            if self.cfg.emotion and self.emotion is not None:
                 emo = self.emotion.update(frame, now)
                 if emo is not None:
                     self.bus.post(EmotionChanged(emotion=emo[0], strength=emo[1]))

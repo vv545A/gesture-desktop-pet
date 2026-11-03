@@ -502,24 +502,34 @@ class PetWindow(QWidget):
             pass                        # 记账失败不该影响正在进行的互动
 
     # ---------------------------------------------------------------- 跟随
-    def _follow_hand(self, pt: tuple) -> None:
+    def _hand_screen_pos(self, pt: tuple) -> QPointF:
         """
-        手掌位置 -> 屏幕位置。
+        掌心的归一化坐标 -> 屏幕坐标。
+
+        抽出来是因为有两个用途：跟手时决定窗口往哪走、撸宠时判断"手够不够近"。
+        两处必须用**同一套映射**，否则会出现"看着摸到了但系统不认"。
 
         gain > 1 是刻意的：摄像头视野里挪 10cm，屏幕上只走 10% 宽度会显得很迟钝；
-        放大 1.6 倍之后，小幅移动就能让宠物跑到屏幕另一头，"隔空驱赶"的感觉才出来。
+        放大 1.6 倍之后小幅移动就能跨半个屏幕，"隔空驱赶"的感觉才出来。
         """
+        r = self._screen_rect()
+        gain = self.cfg.follow_gain
+        gx = 0.5 + (pt[0] - 0.5) * gain
+        gy = 0.5 + (pt[1] - 0.5) * gain
+        return QPointF(r.left() + _clamp(gx, 0.02, 0.98) * r.width(),
+                       r.top() + _clamp(gy, 0.08, 0.94) * r.height())
+
+    def _follow_hand(self, pt: tuple) -> None:
+        """把手掌位置变成窗口位置（只在 follow == "hand" 时生效）。"""
         if self.cfg.follow != "hand":
             return
         now = time.monotonic()
         if now < self._park_until:      # 刚被用户拖过，别抢
             return
         r = self._screen_rect()
-        gain = self.cfg.follow_gain
-        gx = 0.5 + (pt[0] - 0.5) * gain
-        gy = 0.5 + (pt[1] - 0.5) * gain
-        x = r.left() + _clamp(gx, 0.02, 0.98) * r.width() - self.win_w / 2
-        y = r.top() + _clamp(gy, 0.08, 0.94) * r.height() - self.win_h * 0.55
+        p = self._hand_screen_pos(pt)
+        x = p.x() - self.win_w / 2
+        y = p.y() - self.win_h * 0.55
         x = _clamp(x, r.left(), r.right() - self.win_w)
         y = _clamp(y, r.top(), r.bottom() - self.win_h)
         self._target = QPointF(x, y)
@@ -531,10 +541,13 @@ class PetWindow(QWidget):
         为什么不用"手掌坐标离宠物多远"当判据：
             宠物本来就跟着手走，手到哪它到哪——距离永远很近，这个条件恒真，
             等于没判据。真正有信息量的是**两件事同时成立**：
-              1. 宠物已经追上来了（_pos 贴近 _target）→ 说明手停住了；
-              2. 手还在缓慢移动（速度低于 pet_speed）→ 说明不是在发呆。
-            手停住、宠物贴上来、手又轻轻动，这三件事凑齐，
-            主观感受就是"在它身上摸"。
+              1. 手在屏幕上真的落在它身上（距离够近）；
+              2. 手还在缓慢移动（速度低于 pet_speed）。
+            手压在身上、又轻轻动，主观感受就是"在它身上摸"。
+
+        （2026-11 修）默认跟随方式改成 corner 之后，第 1 条必须用**屏幕距离**：
+            它守在角落不动，如果还按"宠物有没有追上手"判断，那个条件会恒为真，
+            手在屏幕另一头慢慢晃也会被算成在摸它。
         """
         if ev is None or not ev.count:
             self._pet_since = 0.0
@@ -542,10 +555,15 @@ class PetWindow(QWidget):
             self._pet_said = False
             return
 
-        settled = (self._pos - self._target).manhattanLength() < 40.0
+        hand = self._hand_screen_pos(ev.point)
+        body = QPointF(self._pos.x() + self.pet_cx,
+                       self._pos.y() + self.pet_cy)
+        # 曼哈顿距离比欧氏宽松一点：手不必精确压在它身上，落在身边就算
+        reach = max(self.body_w, self.body_h) * 0.75
+        near = (hand - body).manhattanLength() < reach
         gentle = ev.speed < self.cfg.pet_speed
 
-        if self._asleep or not (settled and gentle):
+        if self._asleep or not (near and gentle):
             self._pet_since = 0.0
             self._petting = False
             self._pet_said = False

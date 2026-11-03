@@ -23,6 +23,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from ..core.bond import LEVELS
 from ..core.events import PetSay
 from .paint import ui_font
 
@@ -71,6 +72,14 @@ class ControlPanel(QWidget):
         x = MARGIN + PAD
         w = WIDTH - 2 * (MARGIN + PAD)
         y = MARGIN + PAD + 26         # 标题占掉 26
+
+        # 亲密度显示板：一行文字 + 一条进度条。
+        # 放在最上面，因为它是"只读的展示"，和下面的开关是两类东西，
+        # 混在开关堆里会让人以为能点。
+        self._bond_line = QRectF(x, y, w, 16)
+        y += 19
+        self._bond_bar = QRectF(x, y, w, 5)
+        y += 17
 
         for key in ("enabled", "through"):
             self._hits.append((key, QRectF(x, y, w, 30)))
@@ -137,6 +146,7 @@ class ControlPanel(QWidget):
             else:
                 self._paint_button(p, key, rect)
 
+        self._paint_bond(p)
         self._paint_segment(p)
 
         # 底部状态：摄像头到底有没有在工作，是用户最关心的一件事
@@ -174,6 +184,42 @@ class ControlPanel(QWidget):
         p.setBrush(QColor(255, 255, 255))
         d = th - 4
         p.drawEllipse(QPointF(tx + (tw - d - 2 if on else 3) + d / 2, ty + th / 2), d / 2, d / 2)
+
+    def _paint_bond(self, p: QPainter) -> None:
+        """
+        亲密度：等级 + 分数 + 相处天数 + 一条到下一级的进度条。
+
+        只读，不参与命中检测——"关系"不是一个能点的开关。
+        进度条是这个面板里唯一会动的东西，所以它比数字更能说明"还差多少"。
+        """
+        bond = getattr(self.win, "bond", None)
+        if bond is None:
+            return
+        b = bond.bond
+        idx, name, _greet = b.level
+
+        p.setFont(self._font_small)
+        p.setPen(TEXT)
+        p.drawText(self._bond_line,
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   f"亲密度 · {name}")
+        p.setPen(TEXT_DIM)
+        p.drawText(self._bond_line,
+                   int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+                   f"{b.points:.0f} 分 · 第 {bond.days_together()} 天")
+
+        lo = LEVELS[idx][0]
+        hi = LEVELS[idx + 1][0] if idx + 1 < len(LEVELS) else lo
+        frac = 1.0 if hi <= lo else max(0.0, min(1.0, (b.points - lo) / (hi - lo)))
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(232, 237, 247))
+        p.drawRoundedRect(self._bond_bar, 2.5, 2.5)
+        if frac > 0:
+            fill = QRectF(self._bond_bar)
+            fill.setWidth(self._bond_bar.width() * frac)
+            p.setBrush(ACCENT)
+            p.drawRoundedRect(fill, 2.5, 2.5)
 
     def _paint_segment(self, p: QPainter) -> None:
         p.setPen(TEXT_DIM)

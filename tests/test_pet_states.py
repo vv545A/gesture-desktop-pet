@@ -26,6 +26,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from PySide6.QtCore import QPointF                                 # noqa: E402
 from PySide6.QtWidgets import QApplication                       # noqa: E402
 
 from pet.core.bus import EventBus                                # noqa: E402
@@ -104,13 +105,14 @@ check("再比一次退出跟随", win.cfg.follow == "hand")
 
 print("== 睡觉优先于跟随 ==")
 win = make_window()
+win.cfg.follow = "corner"        # 显式设定，不依赖 Config 默认值（它改过一次）
 fire(win, "pet:follow")
 fire(win, "pet:sleep")
 check("跟随时也能睡", win._asleep is True)
 fire(win, "pet:wake")
-# 「跟鼠标」是临时态（☝️ 是一次性指令），睡一觉醒来回到原来的跟手，
+# 「跟鼠标」是临时态（☝️ 是一次性指令），睡一觉醒来回到原来的方式，
 # 而不是继续保持一个用户可能已经不想要的跟随状态
-check("醒来回到睡前的手势跟随", win.cfg.follow == "hand")
+check("醒来回到睡前的方式", win.cfg.follow == "corner")
 check("备份已清空，不会再次误还原", win._follow_backup == "")
 
 print("== 失败的动作不该改状态 ==")
@@ -128,13 +130,26 @@ def hands_at(speed: float):
                      progress=0.0, moving=speed > 0.5, speed=speed)
 
 
+def hands_at(speed: float, point=(0.5, 0.5)):
+    """造一帧"看到手"的事件。"""
+    return HandsSeen(count=1, point=point, gesture=None, side="right",
+                     progress=0.0, moving=speed > 0.5, speed=speed)
+
+
+def park_at_center(win: PetWindow) -> None:
+    """把宠物摆到屏幕正中央，好让 point=(0.5,0.5) 的手正好落在它身上。"""
+    r = win._screen_rect()
+    win._pos = QPointF(r.center().x() - win.pet_cx,
+                       r.center().y() - win.pet_cy)
+    win._target = QPointF(win._pos)
+
+
 win = make_window()
-# 宠物已经追上来了（_pos 贴住 _target）——这是"手停住了"的信号
-win._pos = win._target
+park_at_center(win)
 win._update_petting(100.0, hands_at(0.1))
 check("刚开始摸还没反应（要等 pet_delay）", win._petting is False)
 win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
-check("持续轻抚之后进入被摸状态", win._petting is True)
+check("手落在它身上轻抚后进入被摸状态", win._petting is True)
 
 win._update_petting(101.0, hands_at(2.5))
 check("手快速划过立刻中断", win._petting is False)
@@ -143,27 +158,26 @@ win._update_petting(102.0, None)
 check("手离开画面也中断", win._petting is False)
 check("离开后计时清零", win._pet_since == 0.0)
 
+# 手在画面另一头慢慢晃不算摸。这条是改成 corner 之后最关键的边界：
+# 它守在角落不动，如果还按"宠物有没有追上手"判断，这个条件会恒为真。
+win = make_window()
+park_at_center(win)
+win._update_petting(100.0, hands_at(0.1, point=(0.05, 0.05)))
+win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1, point=(0.05, 0.05)))
+check("手不在它身上时不算摸", win._petting is False)
+check("不在身上时计时也被清掉", win._pet_since == 0.0)
+
 # 睡着的时候不该被"摸"——睡眠锁优先
 win = make_window()
-win._pos = win._target
+park_at_center(win)
 fire(win, "pet:sleep")
 win._update_petting(100.0, hands_at(0.1))
 win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
 check("睡着时不会被摸醒", win._petting is False)
 
-# 宠物还没追上来（手刚跳到别处）不算摸：这一条最容易写错，
-# 少了它，手在屏幕上飞快划过时会被判成"连续抚摸"
-win = make_window()
-win._pos = win._target
-far = win._target = win._target + win._target       # 目标瞬间挪远
-win._update_petting(100.0, hands_at(0.1))
-win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
-check("宠物还没跟上时不算摸", win._petting is False)
-check("距离拉远后计时也被清掉", win._pet_since == 0.0)
-
 # 摸够久要主动说一句，否则用户会怀疑功能坏了
 win = make_window()
-win._pos = win._target
+park_at_center(win)
 win._update_petting(100.0, hands_at(0.1))
 win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
 check("第一次被摸会应一声", win._pet_said is False)
@@ -215,5 +229,18 @@ check("冷却期内不重复关怀", win._care_until == first_until)
 win = make_window()
 win._on_emotion(EmotionChanged(emotion="happy", strength=0.7))
 check("用户笑时跟着高兴", win._user_mood == "happy" and win._cheer_until > 0)
+
+print("== 跟随方式：corner 不再跟手 ==")
+# 默认 follow 改成 corner 之后，"手在画面里动 == 宠物跟着跑"必须彻底停掉。
+# 这条用截图验证不了（demo 里 ☝️ 会切到跟鼠标，看起来还在动），只能锁逻辑。
+win = make_window()
+check("默认是守在角落", win.cfg.follow == "corner")
+before = QPointF(win._target)
+win._on_hands(hands_at(0.1, point=(0.15, 0.15)))
+check("corner 模式下手动不会带着它跑", win._target == before)
+
+win.cfg.follow = "hand"
+win._on_hands(hands_at(0.1, point=(0.8, 0.8)))
+check("切回跟手后它会动（功能没被删）", win._target != before)
 
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

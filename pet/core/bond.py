@@ -190,6 +190,10 @@ class BondTracker:
             parts.append(f"第 {days} 天")
         return " · ".join(parts)
 
+    def days_together(self) -> int:
+        """相处第几天（从第一次见面算）。界面层用它，不用碰私有方法。"""
+        return self._days_together()
+
     def _days_together(self) -> int:
         try:
             first = date.fromisoformat(self.bond.first_seen)

@@ -120,7 +120,10 @@ class Config:
     # 👍 打开的页面。改成 https://www.bing.com/search?q=关键词 就变成"隔空搜索"。
     # 必须命中 actions.BROWSER_ALLOWLIST 的前缀，配错了会被拒绝并记一条警告。
     browser_url: str = "https://www.bing.com/"
-    follow: str = "hand"             # hand / cursor / window / corner
+    # hand = 跟着手掌跑 / cursor = 跟在鼠标后 / window = 吸附前台窗口 / corner = 守在角落
+    # 默认改成 corner：绝大多数时候用户只是要它在旁边待着，
+    # "跟着手到处跑"更适合演示，长期用会显得挡事。
+    follow: str = "corner"
     follow_gain: float = 1.6         # 手掌位移 -> 屏幕位移的放大倍数
     # 跟鼠标：身体中心与指针保持多远（太近会盖住指针，点什么都点不到）
     cursor_trail: float = 110.0

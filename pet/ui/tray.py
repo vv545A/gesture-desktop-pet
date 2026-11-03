@@ -55,6 +55,25 @@ class PetTray:
         self.act_enabled.triggered.connect(self._toggle_enabled)
         menu.addAction(self.act_enabled)
 
+        # 亲密度：只读展示，点一下开面板看明细。
+        # 放在最上面是因为它是"状态"，不是"开关"，和下面那堆 checkable 区别开。
+        self.act_bond = QAction("亲密度：陌生 · 0 分", menu)
+        self.act_bond.triggered.connect(self.window.open_panel)
+        menu.addAction(self.act_bond)
+
+        # 看人的两个能力：都是运行时开关，改完立刻生效（不必重启）
+        self.act_emotion = QAction("情绪感知（按表情调整陪伴）", menu, checkable=True)
+        self.act_emotion.setChecked(bool(window.cfg.emotion))
+        self.act_emotion.triggered.connect(self._toggle_emotion)
+        menu.addAction(self.act_emotion)
+
+        self.act_presence = QAction("在场检测（走开我就打盹）", menu, checkable=True)
+        self.act_presence.setChecked(bool(window.cfg.presence))
+        self.act_presence.triggered.connect(self._toggle_presence)
+        menu.addAction(self.act_presence)
+
+        menu.addSeparator()
+
         act_panel = QAction("打开控制面板（也点一下桌宠）", menu)
         act_panel.triggered.connect(self.window.open_panel)
         menu.addAction(act_panel)
@@ -131,6 +150,28 @@ class PetTray:
         # 游戏可能因为退出/超时自己结束，勾选要跟着真实状态，不能只信点击
         game = getattr(getattr(self.control, "worker", None), "game", None)
         self.act_game.setChecked(bool(getattr(game, "active", False)))
+
+        self.act_emotion.setChecked(bool(self.window.cfg.emotion))
+        self.act_presence.setChecked(bool(self.window.cfg.presence))
+
+        # 亲密度每次都重算：它是会变的，菜单展开时才刷新最省
+        bond = getattr(self.window, "bond", None)
+        if bond is not None:
+            b = bond.bond
+            self.act_bond.setText(
+                f"亲密度：{b.level_name} · {b.points:.0f} 分 · 第 {bond.days_together()} 天")
+
+    def _toggle_emotion(self, checked: bool) -> None:
+        self.window.cfg.emotion = bool(checked)
+        self.window.cfg.save()      # 落盘，下次启动保持
+        self.bus.post(PetSay(text="好，我读读你的表情" if checked else "不看你表情了",
+                             mood="happy"))
+
+    def _toggle_presence(self, checked: bool) -> None:
+        self.window.cfg.presence = bool(checked)
+        self.window.cfg.save()
+        self.bus.post(PetSay(text="你走了我会打盹" if checked else "我就在这儿等着",
+                             mood="happy"))
 
     def _toggle_game(self, checked: bool) -> None:
         if self.control is None:
