@@ -16,6 +16,7 @@
 
 import os
 import sys
+import json
 import tempfile
 
 import numpy as np
@@ -309,5 +310,110 @@ except OSError:
 
 check("跟鼠标有安全距离参数", Config().cursor_trail >= 80)
 check("吸附默认正面朝前", Config().dock_face_front is True)
+
+# ---------------------------------------------------------------- 表情与动作
+# 动作系统是纯数据 + 纯函数（anim.py 不 import Qt），所以能在这里全测掉。
+print("== 表情与动作 ==")
+from pet.ui import anim                                        # noqa: E402
+
+FRAME_NAMES = {"stand", "happy", "wave", "think", "sleepy", "angry", "sit"}
+
+check("每个情绪都能落到一张立绘上",
+      all(anim.frame_for_mood(m) in FRAME_NAMES for m in anim.MOOD_FRAME))
+check("没见过的情绪有兜底", anim.frame_for_mood("不存在的情绪") == anim.FALLBACK_FRAME)
+check("害羞用抱胸那张（比笑更像害羞）", anim.frame_for_mood("shy") == "think")
+check("惊讶用举手那张", anim.frame_for_mood("surprised") == "wave")
+
+bad = []
+for name, c in anim.CLIPS.items():
+    ts = [f.t for f in c.frames]
+    if c.dur <= 0:
+        bad.append(f"{name}:时长")
+    if not ts or abs(ts[0]) > 1e-9 or abs(ts[-1] - 1.0) > 1e-9:
+        bad.append(f"{name}:首尾")
+    if any(b <= a for a, b in zip(ts, ts[1:])):
+        bad.append(f"{name}:时间不倒序")
+    if any(f.frame and f.frame not in FRAME_NAMES for f in c.frames):
+        bad.append(f"{name}:帧名")
+check("所有动作的关键帧都合法（首尾 0/1、时间递增、帧名存在）", not bad, str(bad[:3]))
+check("动作库里至少有 10 个动作", len(anim.CLIPS) >= 10, f"({len(anim.CLIPS)})")
+
+p = anim.AnimPlayer()
+check("动作名拼错不会播", p.play("没有这个动作", 0.0) is False and not p.active)
+
+p.play("hop", 0.0)
+m0 = p.sample(0.0)
+check("起手是原样（不动）", m0 is not None and abs(m0.dy) < 1e-9 and abs(m0.sx - 1) < 1e-9)
+m_mid = p.sample(0.55 * 0.32)
+check("跳到最高点时向上位移", m_mid is not None and m_mid.dy < -0.08, f"(dy={m_mid.dy:.3f})")
+check("跳起来时被拉长", m_mid.sy > 1.0 and m_mid.sx < 1.0)
+m_land = p.sample(0.55 * 0.80)
+check("落地时压扁", m_land is not None and m_land.sy < 1.0 and m_land.sx > 1.0)
+check("播完返回 None", p.sample(0.56) is None and not p.active)
+
+p.stop()
+p.play("wave", 0.0)
+check("招手会换成 wave 帧", p.sample(1.30 * 0.30).frame == "wave")
+p.stop()
+p.play("sit_down", 0.0)
+check("坐下最后停在 sit 帧", p.sample(0.55 * 0.90).frame == "sit")
+check("坐下播到一半不重播（独占）", p.play("sit_down", 0.10) is False)
+check("强推可以重播", p.play("sit_down", 0.10, force=True) is True)
+check("换个动作可以随时打断", p.play("stand_up", 0.12) is True)
+p3 = anim.AnimPlayer()
+check("没在播的时候进度是 0 且不叠加变换",
+      p3.progress(9.9) == 0.0 and p3.sample(9.9) is None)
+p2 = anim.AnimPlayer()
+p2.play("nod", 0.0, speed=2.0)
+check("二倍速让 0.7 秒的动作在 0.175 秒走完一半",
+      abs(p2.progress(0.175) - 0.5) < 0.01, f"(p={p2.progress(0.175):.3f})")
+
+# ---------------------------------------------------------------- 配置迁移
+# 换形象最容易踩的坑：用户机器上的 pet_config.json 写死了旧立绘路径，
+# 新版默认值永远轮不到生效 —— 打开还是老形象，看着像"根本没更新"。
+print("== 配置迁移（换新形象）==")
+CHECK_VERSION = Config().config_version
+mig_path = os.path.join(tempfile.gettempdir(), "pet_cfg_migrate.json")
+
+
+def write_cfg(data):
+    with open(mig_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+write_cfg({"sprite": "assets/whale_front.png", "sprite_side": "assets/whale_side.png",
+           "pet_name": "小鲸", "pet_scale": 1.0, "follow": "cursor"})
+mig = Config.load(mig_path)
+check("旧立绘被换成新形象", mig.sprite == Config().sprite, mig.sprite)
+check("旧侧视图被清掉（留着是坏路径）", mig.sprite_side == "")
+check("旧名字升到新默认", mig.pet_name == Config().pet_name)
+check("旧体型升到新默认", abs(mig.pet_scale - Config().pet_scale) < 1e-9)
+check("用户改过的跟随方式没被动", mig.follow == "cursor")
+check("版本号写回磁盘", mig.config_version == CHECK_VERSION)
+
+write_cfg({"sprite": "assets/whale_front.png", "pet_name": "小鲸"})
+Config.load(mig_path)
+with open(mig_path, "r", encoding="utf-8") as f:
+    check("迁移结果已回存到文件", json.load(f)["sprite"] == Config().sprite)
+
+write_cfg({"sprite": "assets/girl/wave.png", "pet_name": "阿黄", "pet_scale": 1.3,
+           "config_version": 1})
+custom = Config.load(mig_path)
+check("用户自己选的形象绝不覆盖", custom.sprite == "assets/girl/wave.png")
+check("用户自己起的名字绝不覆盖", custom.pet_name == "阿黄")
+check("用户自己调的体型绝不覆盖", abs(custom.pet_scale - 1.3) < 1e-9)
+check("但版本号照样升级", custom.config_version == CHECK_VERSION)
+
+write_cfg({"config_version": CHECK_VERSION, "sprite": "assets/girl/sit.png"})
+v2 = Config.load(mig_path)
+check("已经是最新版本就什么都不动", v2.sprite == "assets/girl/sit.png")
+
+write_cfg({"sprite": ""})
+check("空立绘（矢量版用户）也会被升级", Config.load(mig_path).sprite == Config().sprite)
+
+try:
+    os.remove(mig_path)
+except OSError:
+    pass
 
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

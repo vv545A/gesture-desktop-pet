@@ -2,13 +2,19 @@
 """
 桌宠外观 —— 全部用 QPainter 现画，不依赖任何图片资源。
 
-为什么先程序化绘制（而不是贴图/序列帧）：
-    * 换造型、换配色、加表情只改数值，不用重做美术资源
-    * 矢量绘制在高 DPI 屏上永远清晰，窗口缩放不糊
-    * 后期换成序列帧/Live2D 时，只要实现同样的 draw_pet() 接口即可
+现在的分工（重要）：
+    **默认形象是贴图**（`pet/assets/girl/*.png`，见 ui/sprite.py），
+    这个文件负责的是「贴图之外的一切」以及「贴图缺失时的兜底」：
+        * 影子、柔光、悬停进度环、气泡、情绪特效（星星/爱心/怒气/Zzz）
+        * 矢量版整只宠物（`sprite: ""` 时才会画出来）
 
-形象设定：DeepSeek 鲸鱼娘「小鲸」——Q 版少女，深蓝渐变长发、鳍状耳、
-鲸尾、头顶一簇水花。配色取 DeepSeek 的品牌蓝（#4D6BFE）为骨架，
+为什么保留矢量版：
+    * 素材丢了 / 只想跑逻辑时，程序仍然是个能看的桌宠，不会变成一个空窗口
+    * 加情绪特效（`draw_mood_fx`）时它是最好的试验台：改数值立刻见效
+    * 矢量绘制在高 DPI 屏上永远清晰，不依赖图片分辨率
+
+矢量版的形象设定：DeepSeek 鲸鱼娘「小鲸」——Q 版少女，深蓝渐变长发、
+鳍状耳、鲸尾、头顶一簇水花。配色取 DeepSeek 的品牌蓝（#4D6BFE）为骨架，
 肤色/裙装压到接近白，让蓝发成为视觉重心。
 
 坐标约定（很重要，改之前先看这个）
@@ -555,12 +561,15 @@ def _spout(p: QPainter, w: float, h: float, pose: PetPose, lw: float) -> None:
 
 # ---------------------------------------------------------------- 主绘制
 def draw_pet(p: QPainter, cx: float, cy: float, w: float, h: float,
-             pose: PetPose) -> None:
+             pose: PetPose, motion=None) -> None:
     """
     在 (cx, cy) 处画一只宽 w 高 h 的鲸鱼娘。
 
     调用方负责句柄状态之外的一切（背景、气泡）。这里只画角色本体，
     所以它在窗口、托盘图标、离屏快照三种场景里都能直接复用。
+
+    motion 是 ui/anim.py 的动作变换（可选）。矢量版同样要跟着跳、跟着摇头，
+    所以和贴图版一样把它叠进来 —— 两套形象的动作幅度才一致。
     """
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -573,11 +582,17 @@ def draw_pet(p: QPainter, cx: float, cy: float, w: float, h: float,
     cy += pose.bob * h * 0.5
     lw = max(1.0, w * 0.013)          # 线稿粗细跟着尺寸走，缩小时才不会糊成一团
 
-    p.translate(cx, cy)
+    dx = dy = rot = 0.0
+    if motion is not None:
+        dx, dy, rot = motion.dx * w, motion.dy * h, motion.rot
+        w *= motion.sx
+        h *= motion.sy
+
+    p.translate(cx + dx, cy + dy)
     draw_shadow(p, 0, 0, w, h)
     draw_glow(p, 0, 0, w, h, pose.glow)
 
-    p.rotate(pose.tilt)
+    p.rotate(pose.tilt + rot)
     hy = -h * 0.195                  # 头部中心
 
     _tail(p, w, h, lw, pose.wag)
@@ -590,7 +605,8 @@ def draw_pet(p: QPainter, cx: float, cy: float, w: float, h: float,
 
     p.restore()
 
-    draw_aura(p, cx, cy, w, h, pose.aura)
+    # 进度环跟着身体走（跳起来时环也该一起跳，不然像是钉在桌面上）
+    draw_aura(p, cx + dx, cy + dy, w, h, pose.aura)
 
 
 def draw_aura(p: QPainter, cx: float, cy: float, w: float, h: float,
@@ -680,53 +696,138 @@ def _zed(p: QPainter, x: float, y: float, size: float, alpha: int) -> None:
     p.drawPath(path)
 
 
+def _heart(p: QPainter, cx: float, cy: float, r: float, color: QColor) -> None:
+    """爱心：两个圆 + 一个尖。比贝塞尔好调，也不会出现尖角接不上的缝。"""
+    p.setBrush(QBrush(color))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(QPointF(cx - r * 0.45, cy - r * 0.22), r * 0.52, r * 0.52)
+    p.drawEllipse(QPointF(cx + r * 0.45, cy - r * 0.22), r * 0.52, r * 0.52)
+    tri = QPainterPath()
+    tri.moveTo(cx - r * 0.96, cy - r * 0.06)
+    tri.lineTo(cx + r * 0.96, cy - r * 0.06)
+    tri.lineTo(cx, cy + r * 0.98)
+    tri.closeSubpath()
+    p.drawPath(tri)
+
+
+def _vein(p: QPainter, cx: float, cy: float, r: float, alpha: int) -> None:
+    """
+    漫画里的"爆血管"记号：四条短弧围成一个十字。
+
+    为什么不用 ``#``：那个字符在不同字体里粗细差得很远，而且得为它再引一次
+    字体加载。四段圆弧在哪台机器上都长一样。
+    """
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(QColor(226, 92, 96, alpha), max(1.6, r * 0.34),
+                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+        path = QPainterPath()
+        path.moveTo(cx + sx * r * 0.28, cy + sy * r * 0.92)
+        path.quadTo(cx + sx * r * 0.92, cy + sy * r * 0.92,
+                    cx + sx * r * 0.92, cy + sy * r * 0.28)
+        p.drawPath(path)
+
+
+def _dots(p: QPainter, x: float, y: float, size: float, alpha: int,
+          phase: float) -> None:
+    """省略号：三个点依次亮起来，像"正在想"。"""
+    for i in range(3):
+        f = 0.35 + 0.65 * max(0.0, math.sin(phase * 2.6 - i * 0.7))
+        p.setBrush(QBrush(QColor(140, 158, 196, int(alpha * f))))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(x + i * size * 1.35, y), size * 0.30, size * 0.30)
+
+
 def draw_mood_fx(p: QPainter, cx: float, cy: float, w: float, h: float,
                  mood: str, phase: float) -> None:
     """
-    贴图形象的表情是"焊死"的，情绪只能靠特效补。
+    情绪特效。立绘帧已经能换表情了，但"星星 / 爱心 / 怒气 / Zzz"这类
+    **浮在身体外面的符号**画不进立绘（它们得能动），所以留在这里补。
 
-    这几笔是刻意的低配方案：不用换立绘、不用序列帧，就能让"开心/惊讶/困"
-    三种状态被一眼看出来。矢量版自己有眼睛和嘴，不需要这些。
+    现有：happy/proud 星星 · shy 粉色光点 · surprised 感叹号 ·
+         sleepy Zzz · love 爱心 · angry 爆血管 · think 省略号
+
+    尺度约定（换立绘时最容易在这里翻车）
+        横向一律用 ox 当"身体外沿"，纵向用 h 当参考。
+        **不能拿 w 当所有尺寸的基准**：这套立绘比上一版细（宽高比 0.67 vs 0.75），
+        早先按 w 算的符号只有 4~6px，画出来几乎看不见。
+        符号大小统一挂在 h 上 —— 宠物放大缩小时，符号跟着一起变。
+
+        另一条实测经验：符号一开始摆得太靠外（ox = w*0.86），飘在离身体 40px
+        的空白里，不像"从她头上冒出来的"。0.64 刚好贴着头两侧，也不会出窗口。
     """
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
+    ox = max(w * 0.64, h * 0.34)      # 横向"出界"参考：贴着头的两侧
     if mood in ("happy", "proud"):
         # 四颗星星分布在她脑袋两侧：太靠内会被头发吃掉，太靠外又会飘出窗口
-        pts = ((-0.55, -0.26), (0.55, -0.20), (0.47, -0.42), (-0.44, -0.40))
+        pts = ((-0.95, -0.28), (0.95, -0.22), (0.80, -0.50), (-0.76, -0.48))
         for i, (dx, dy) in enumerate(pts):
             tw = 0.45 + 0.55 * math.sin(phase * 3.2 + i * 1.9)
             if tw <= 0.08:
                 continue
-            r = w * 0.075 * tw
-            _sparkle(p, cx + dx * w, cy + dy * h, r * 1.9,
+            r = h * 0.052 * tw
+            _sparkle(p, cx + dx * ox, cy + dy * h, r * 1.9,
                      QColor(255, 214, 120, int(60 * tw)))     # 外圈柔光
-            _sparkle(p, cx + dx * w, cy + dy * h, r,
+            _sparkle(p, cx + dx * ox, cy + dy * h, r,
                      QColor(255, 236, 168, int(235 * tw)))    # 内芯
 
     elif mood == "shy":
         for i, sgn in enumerate((-1, 1)):
             f = 0.6 + 0.4 * math.sin(phase * 2.2 + i * 1.7)
-            _sparkle(p, cx + sgn * w * 0.50, cy - h * (0.26 + 0.04 * i),
-                     w * 0.060 * f, QColor(255, 150, 178, int(210 * f)))
+            _sparkle(p, cx + sgn * ox * 0.92, cy - h * (0.30 + 0.05 * i),
+                     h * 0.046 * f, QColor(255, 150, 178, int(215 * f)))
 
     elif mood == "surprised":
-        x, y = cx + w * 0.46, cy - h * 0.44
+        # 感叹号：以前只有 5×10px，缩到桌宠尺寸就成了一条橙线，看不出是"！"
+        x, y = cx + ox * 0.90, cy - h * 0.44
         p.setBrush(QBrush(QColor(255, 170, 70, 240)))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(x - w * 0.030, y - h * 0.095, w * 0.060,
-                                 h * 0.115), w * 0.028, w * 0.028)
-        p.drawEllipse(QPointF(x, y + h * 0.052), w * 0.030, w * 0.030)
+        p.drawRoundedRect(QRectF(x - h * 0.026, y - h * 0.070, h * 0.052,
+                                 h * 0.090), h * 0.022, h * 0.022)
+        p.drawEllipse(QPointF(x, y + h * 0.044), h * 0.024, h * 0.024)
 
     elif mood == "sleepy":
         for i in range(3):
             f = (phase * 0.45 + i * 0.33) % 1.0
-            alpha = int(170 * (1.0 - f))
+            alpha = int(185 * (1.0 - f))
             if alpha <= 6:
                 continue
-            size = w * 0.080 * (0.7 + 0.8 * f)
-            _zed(p, cx + w * (0.30 + 0.18 * f), cy - h * (0.34 + 0.16 * f),
+            size = h * 0.058 * (0.7 + 0.8 * f)
+            _zed(p, cx + ox * (0.66 + 0.30 * f), cy - h * (0.30 + 0.18 * f),
                  size, alpha)
+
+    elif mood == "love":
+        # 被摸：三颗心交替往上飘，越飘越淡
+        for i in range(3):
+            f = (phase * 0.7 + i * 0.34) % 1.0
+            alpha = int(235 * (1.0 - f))
+            if alpha <= 8:
+                continue
+            r = h * 0.046 * (0.75 + 0.45 * f)
+            sway = math.sin((phase * 2.0 + i) * 1.7) * h * 0.030
+            _heart(p, cx + ox * (0.76 + 0.12 * i) + sway,
+                   cy - h * (0.12 + 0.30 * f), r,
+                   QColor(255, 138, 166, alpha))
+
+    elif mood == "angry":
+        # 怒气记号：头右上一枚，配两缕往上飘的红点
+        _vein(p, cx + ox * 0.86, cy - h * 0.30, h * 0.060,
+              int(220 * (0.6 + 0.4 * math.sin(phase * 6.0))))
+        for i in range(2):
+            f = (phase * 0.9 + i * 0.5) % 1.0
+            alpha = int(150 * (1.0 - f))
+            if alpha <= 8:
+                continue
+            r = h * 0.020 * (0.8 + 0.6 * f)
+            p.setBrush(QBrush(QColor(232, 140, 140, alpha)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(cx - ox * (0.80 + 0.10 * i),
+                                  cy - h * (0.26 + 0.24 * f)), r, r)
+
+    elif mood == "think":
+        _dots(p, cx + ox * 0.72, cy - h * 0.36, h * 0.038, 215, phase)
 
     p.restore()
 

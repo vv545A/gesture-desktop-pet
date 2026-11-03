@@ -112,3 +112,7 @@ class PetSay(Event):
 
     text: str = ""
     mood: str = "happy"
+    # 说这句话的时候顺带播哪个动作（见 ui/anim.py 的 CLIPS），"" = 不播。
+    # 加这个字段是因为"说话"和"做动作"经常是同一件事的两半：
+    # 保存成功该点一下头、被关掉该瘫下去 —— 分开传两条事件反而容易错位。
+    anim: str = ""

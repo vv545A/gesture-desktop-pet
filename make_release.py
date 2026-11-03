@@ -25,7 +25,8 @@ INCLUDES = [
     "setup.bat", "README.md", "ARCHITECTURE.md", "START_HERE.txt",
     "LICENSE", "THIRD_PARTY_NOTICES.md",
     "pet_poses.png", "pet_ui_panel.png", "pet_dock.png",
-    "pet_cursor_follow.png", "pet_bindings.png",
+    "pet_cursor_follow.png", "pet_bindings.png", "pet_actions.png",
+    "pet_moods.png",
     "models/hand_landmarker.task",
     "models/gesture_recognizer.task",
     "models/blaze_face_short_range.tflite",
@@ -35,9 +36,11 @@ INCLUDES = [
 ]
 
 # 整个目录一起打包（桌宠那一层文件多，逐个列容易漏）
-DIR_INCLUDES = ["pet"]
+#   pet/    含 assets/girl/ 的七帧立绘，漏了桌宠就没形象了
+#   tools/  prep_sprites.py —— 别人想换自己的图时要用，属于"可复现"的一部分
+DIR_INCLUDES = ["pet", "tools"]
 
-SKIP_DIRS = {".venv", "__pycache__", ".workbuddy", "dist", "calibration", ".git"}
+SKIP_DIRS = {".venv", "__pycache__", ".workbuddy", "dist", "build", "calibration", ".git"}
 
 
 def collect() -> list[str]:

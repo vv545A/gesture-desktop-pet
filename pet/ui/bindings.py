@@ -279,7 +279,9 @@ class BindingsDialog(QDialog):
 
     def _save(self) -> None:
         self._apply(self._collect())
-        self.bus.post(PetSay(text="对照表改好啦，马上生效", mood="happy"))
+        # 带一个点头动作：确认类反馈光说话不够，"点头"这个动作才是"我记住了"
+        self.bus.post(PetSay(text="对照表改好啦，马上生效", mood="happy",
+                             anim="nod"))
         self.accept()
 
     def _reset(self) -> None:
@@ -290,4 +292,4 @@ class BindingsDialog(QDialog):
             self.cfg.save()
         except Exception as e:
             print(f"[bindings] 保存配置失败：{e}")
-        self.bus.post(PetSay(text="都改回出厂设置啦", mood="calm"))
+        self.bus.post(PetSay(text="都改回出厂设置啦", mood="calm", anim="nod"))

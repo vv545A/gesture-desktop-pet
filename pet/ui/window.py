@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import math
+import random
 import sys
 import time
 from typing import Optional
@@ -33,6 +34,7 @@ from ..core.bus import EventBus
 from ..core.config import Config
 from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
                            HandsSeen, PerceptionFailed, PerceptionReady, PetSay)
+from . import anim
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
@@ -68,8 +70,10 @@ class PetWindow(QWidget):
         self.body_w = self.body_h * self._aspect
         self.win_w = int(self.body_w * 1.95)
         # 高度 = 身体 + 上方气泡空间 + 下方余量（进度环会画到身体外面，
-        # 底部留十几 px 才不会被窗口边缘切掉）
-        self.win_h = int(self.body_h + 150 * self.scale)
+        # 底部留十几 px 才不会被窗口边缘切掉）。
+        # 上方留 120（原来是 150）：立绘换成了自带完整轮廓的整图，头顶没有
+        # "水花"那截多余空间了，再留 150 会顶出一大片空白。
+        self.win_h = int(self.body_h + 120 * self.scale)
         self.pet_cx = self.win_w / 2.0
         self.pet_cy = self.win_h - self.body_h * 0.55 - 16
 
@@ -126,6 +130,16 @@ class PetWindow(QWidget):
         self._mood = "idle"
         self._mood_until = 0.0
         self._phase = 0.0                  # 单调时钟，特效（星星/Zzz）靠它走相位
+
+        # ---- 动作（跳、摇头、招手……见 ui/anim.py） ----
+        self._anim = anim.AnimPlayer()
+        self._motion = None                # 本帧采样到的动作变换
+        self._frame = anim.frame_for_mood("idle")   # 当前画的立绘帧
+        self._sit = False                  # 是不是坐在地上
+        self._yawned = False               # 这一轮"困了"有没有打过哈欠
+        self._stretched = False            # 坐久了有没有伸过懒腰（只伸一次）
+        self._no_sit_until = 0.0           # 刚站起来那几秒先别再坐下去
+        self._pats = []                    # 最近几下"摸"的时刻，用来升级成生气
 
         # ---- 气泡 ----
         self._bubble = ""
@@ -245,6 +259,7 @@ class PetWindow(QWidget):
     def _on_hands(self, ev: Event) -> None:
         assert isinstance(ev, HandsSeen)
         now = time.monotonic()
+        away = now - self._last_hand      # 这帧之前，已经多久没见过手了
         if ev.count and ev.point:
             self._last_hand = now
             self._hand_pt = ev.point
@@ -252,25 +267,71 @@ class PetWindow(QWidget):
             # 手在画面里移动 -> 视线跟着手，是最便宜也最有效的"活着"信号
             self._look = (_clamp((ev.point[0] - 0.5) * 2.2, -1.0, 1.0),
                           _clamp((ev.point[1] - 0.5) * 2.0, -1.0, 1.0))
+            self._wake_up("hand", now, away)
         else:
             self._hand_pt = None
             self._look = (0.0, 0.0)
+            self._yawned = False          # 手走了：下次犯困可以再打一次哈欠
 
         # 悬停进度环：这 0.5 秒的等待画在宠物身上，比画在屏幕角落直观得多
         self._aura_target = float(ev.progress) if ev.count else 0.0
         self._glow_target = 1.0 if ev.count else 0.0
-        if ev.count and self._mood in ("idle", "sleepy"):
+        if ev.count and self._mood in ("idle", "sleepy", "sit"):
+            self._set_mood("listen", hold=0.8)
+
+    def _stand_up(self, now: float) -> None:
+        """
+        从坐姿站起来。
+
+        为什么要有这个小函数：`sit` 是**唯一不参与超时回收**的情绪（坐下是持续
+        状态，见 `_tick` 第 3 步）。所以每一个"站起来"的地方都必须顺手把 mood
+        从 `sit` 里放出来，否则会出现"站着的身子、坐着的那张图"这种卡死状态。
+        五个入口（见手 / 执行动作 / 说话 / 被摸 / 被拖）各写一遍太容易漏，收在这里。
+        """
+        if not self._sit:
+            return
+        self._sit = False
+        self._anim.play("stand_up", now)
+        # 三秒内别再坐下去：站起来往往是因为"有人理我了"（手入镜/被摸/被拖），
+        # 如果同一帧又判定为"没人理"，就会出现站起来立刻坐下的抽搐。
+        self._no_sit_until = now + 3.0
+        if self._mood == "sit":
+            self._set_mood("listen", hold=0.8)
+
+    def _wake_up(self, why: str, now: float, away: float) -> None:
+        """
+        把宠物从"坐/困"里叫醒，并给一个见面反应。
+
+        为什么值得单独写：手抬起来的那一刻是**唯一一次**它能主动打招呼的机会。
+        原来这里只改一句 mood，看起来像是"换了个表情"；加一个招手动作之后，
+        它才像注意到你了。
+        """
+        self._stand_up(now)
+        if away > 6.0:
+            # 好久没见 -> 招手 + 打招呼
+            self._anim.play("wave", now)
+            self.say("手来啦～", "wave")
+        elif away > 1.2:
+            # 刚离开又回来 -> 只是精神一下，不用说话
             self._set_mood("listen", hold=0.8)
 
     def _on_action(self, ev: Event) -> None:
         assert isinstance(ev, ActionDone)
-        if ev.bubble:
-            self.say(ev.bubble, ev.mood if ev.ok else "surprised")
-        # 说完话抖一下：动作反馈要"有重量"，不能只是文字变一下
-        self._pose.squash = 0.22 if ev.ok else -0.20
-        self._pose.bob = 0.10
-        if not ev.ok and ev.detail:
-            print(f"[action] {ev.label} 失败：{ev.detail}")
+        now = time.monotonic()
+        self._stand_up(now)
+        if ev.ok:
+            # 成功 -> 蹦一下。动作反馈要"有重量"，不能只是文字变一下
+            self._anim.play("hop", now)
+            if ev.bubble:
+                self.say(ev.bubble, ev.mood)
+        else:
+            # 失败 -> 摇头 + 生气，而且**把原因说出来**。
+            # 以前只 print 到控制台，打包成无控制台程序之后用户根本看不到，
+            # 只会觉得"比了手势没反应"。
+            self._anim.play("shake", now)
+            self.say(ev.detail or "这一步没做成…", "angry")
+            if ev.detail:
+                print(f"[action] {ev.label} 失败：{ev.detail}")
 
     def _on_continuous(self, ev: Event) -> None:
         assert isinstance(ev, ContinuousAction)
@@ -293,6 +354,10 @@ class PetWindow(QWidget):
     def _on_say(self, ev: Event) -> None:
         assert isinstance(ev, PetSay)
         self.say(ev.text, ev.mood)
+        # 说话时可以顺带做个动作（PetSay.anim）：保存成功点个头、被关掉瘫下去……
+        # 单靠换表情说话，看起来像"屏幕上的字幕变了"，加上动作才像在回应你。
+        if ev.anim:
+            self._anim.play(ev.anim, time.monotonic())
 
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
@@ -307,6 +372,8 @@ class PetWindow(QWidget):
     def say(self, text: str, mood: str = "happy") -> None:
         self._bubble = text
         self._bubble_t0 = time.monotonic()
+        if mood != "sit":
+            self._stand_up(self._bubble_t0)
         self._set_mood(mood, hold=1.6)
 
     def _set_mood(self, mood: str, hold: float = 1.5) -> None:
@@ -314,9 +381,34 @@ class PetWindow(QWidget):
         self._mood_until = time.monotonic() + hold
 
     def pet_me(self) -> None:
-        """被点/被摸：这是唯一不需要手势也能建立的"关系"。"""
-        self.say("嘿嘿…再摸一下", "shy")
-        self._pose.squash = -0.25
+        """
+        被点 / 被摸 —— 唯一不需要手势就能建立的"关系"。
+
+        这里是整个桌宠最容易被点到的交互，所以做了**升级**：
+            第 1 下  缩一下、冒爱心："嘿嘿…好痒"
+            第 2~4 下 蹦一下："还要～"
+            第 5 下起  鼓脸摇头："别再戳啦！"
+        只在 pet_pat_window 秒内连点才累计，停一会儿就消气。
+        没有升级的话，点十下和点一下完全一样，人就再也不想点了。
+        """
+        now = time.monotonic()
+        window = max(0.5, self.cfg.pet_pat_window)
+        self._pats = [t for t in self._pats if now - t < window]
+        self._pats.append(now)
+        n = len(self._pats)
+        self._stand_up(now)
+
+        if n >= max(2, self.cfg.pet_pat_limit):
+            self._pats.clear()
+            self._anim.play("shake", now, force=True)
+            self.say(random.choice(["别、别再戳啦！", "哼！不理你了", "戳坏了要赔的"]),
+                     "angry")
+        elif n >= 2:
+            self._anim.play("hop", now, force=True)
+            self.say(random.choice(["还要～", "嘿嘿，再来", "好痒好痒"]), "happy")
+        else:
+            self._anim.play("pat", now, force=True)
+            self.say("嘿嘿…好痒", "love")
 
     # ---------------------------------------------------------------- 跟随
     def _follow_hand(self, pt: tuple) -> None:
@@ -486,9 +578,31 @@ class PetWindow(QWidget):
         #    吸附/跟鼠标两种模式下不回家：一个要守在操作目标旁边，
         #    一个位置本来就由指针决定，抢位置只会让两边打架。
         quiet = now - self._last_hand
+        # 站起来了就重新允许伸懒腰 —— 这样"坐下 → 伸个懒腰 → 被叫醒 → 又坐下"
+        # 每一轮都有一次，不用在每个站起来的地方各写一遍重置。
+        if not self._sit:
+            self._stretched = False
         if quiet > self.cfg.idle_after:
-            if self._mood not in ("sleepy", "shy"):
+            if self._mood not in ("sleepy", "shy", "sit"):
                 self._set_mood("sleepy" if quiet > self.cfg.idle_after * 2 else "idle", 0.5)
+            # 刚犯困：打一个哈欠。只打一次，否则每帧都在打，像卡住了。
+            if quiet > self.cfg.idle_after * 2 and not self._yawned:
+                self._yawned = True
+                self._anim.play("yawn", now)
+            # 坐久了：坐下。这是"没人理我"的最强信号，比站着发呆更像活的。
+            if (quiet > max(self.cfg.idle_sit_after, self.cfg.idle_after * 2)
+                    and not self._sit and not self._ui_open()
+                    and not self._dragging and now > self._no_sit_until):
+                self._sit = True
+                self._set_mood("sit", hold=1e9)
+                self._anim.play("sit_down", now)
+            # 坐更久：伸个懒腰。坐着一直不动就成了图片，伸一次就"活着"了。
+            # 只伸一次 —— 每隔几秒伸一下比不动更假（像卡在循环里）。
+            if (self._sit and not self._stretched
+                    and quiet > max(self.cfg.idle_sit_after * 1.8,
+                                    self.cfg.idle_sit_after + 12.0)):
+                self._stretched = True
+                self._anim.play("stretch", now)
             if (self.cfg.follow not in ("window", "cursor") and not self._dragging
                     and not self._ui_open() and now > self._park_until):
                 self._place_home(immediate=False)
@@ -523,8 +637,10 @@ class PetWindow(QWidget):
         if self.cfg.follow == "window" and self.cfg.dock_face_front:
             self._facing = 0
 
-        # 3) 情绪超时后退回 idle
-        if now > self._mood_until and self._mood not in ("idle", "sleepy"):
+        # 3) 情绪超时后退回 idle。
+        #    "sit" 不在其中：坐下是一种**持续状态**，只有看到手/被点/有动作
+        #    才会站起来（见 _wake_up / pet_me）。否则坐两秒又站起来，很怪。
+        if now > self._mood_until and self._mood not in ("idle", "sleepy", "sit"):
             self._set_mood("idle", 0.5)
 
         # 3b) 面板跟着宠物走：跟手模式下宠物会一直移动，面板要是钉在原地，
@@ -538,6 +654,10 @@ class PetWindow(QWidget):
         target = PetPose.for_mood(self._mood)
         target.squash += 0.030 * math.sin(now * 2.1)
         target.bob += 0.012 * math.sin(now * 1.7 + 0.6)
+        # 走动时朝行进方向倾一点。这套立绘没有侧视图，靠"倾斜"表达方向比
+        # 硬翻面自然（正面立绘翻面是看不出来的，只会让尾巴跑到另一边）。
+        if self._facing and self.cfg.sprite_walk:
+            target.tilt += self._facing * 4.0
 
         # 5) 进度环 / 柔光：目标值来自事件，这里追上去，避免一帧闪
         self._aura += (self._aura_target - self._aura) * _clamp(dt * 10, 0, 1)
@@ -552,6 +672,12 @@ class PetWindow(QWidget):
         # 尾巴/长发的摆动直接给正弦。不走插值：插值会把振幅压扁，
         # 摆起来就只剩"微微动一下"，反而更像静止图片。
         self._pose.wag = math.sin(now * 1.7) * 0.55 + math.sin(now * 0.9) * 0.25
+
+        # 6b) 动作片段叠加。注意这里**不插值** motion：片段自己有关键帧曲线，
+        #     再套一层插值只会把动作抹平（跳起来像被慢慢举高）。
+        self._motion = self._anim.sample(now)
+        self._frame = (self._motion.frame if self._motion is not None
+                       and self._motion.frame else anim.frame_for_mood(self._mood))
 
         # 7) 气泡淡入/保持/淡出
         age = now - self._bubble_t0
@@ -582,19 +708,26 @@ class PetWindow(QWidget):
 
         if self._sprite is not None:
             # 贴图版没有独立的影子和柔光层，这里补上，构图才和矢量版一致
-            draw_shadow(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h)
+            # 跳起来的时候影子缩小：影子是"钉在地上"的，会跟着身体往上走就假了
+            sh = 1.0
+            if self._motion is not None:
+                sh = _clamp(1.0 + self._motion.dy * 2.2, 0.55, 1.15)
+            draw_shadow(p, self.pet_cx, self.pet_cy, self.body_w * sh,
+                        self.body_h * sh)
             draw_glow(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
                       self._glow)
             self._sprite.draw(p, self.pet_cx, self.pet_cy, self.body_w,
-                              self.body_h, self._pose, self._facing)
-            # 贴图的脸换不了，情绪靠特效补（星星 / 感叹号 / Zzz）
+                              self.body_h, self._pose, frame=self._frame,
+                              motion=self._motion, facing=self._facing)
+            # 立绘管表情，星星 / 爱心 / 怒气 / Zzz 这类"浮在身体外面"的
+            # 符号管气氛 —— 两边各管一半，缺一半就像个假人。
             draw_mood_fx(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
                          self._mood, self._phase)
             draw_aura(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
                       self._aura)
         else:
             draw_pet(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
-                     self._pose)
+                     self._pose, self._motion)
 
         if self._bubble_alpha > 0.01 and self._bubble:
             # 气泡贴在头顶水花上方，尾巴刚好戳到脑袋
@@ -797,6 +930,10 @@ class PetWindow(QWidget):
         if self._press_at is not None and not self._drag_moved:
             if (pos - self._press_at).manhattanLength() > 5:
                 self._drag_moved = True
+                # 被拎起来了：惊吓一下。只在"真的开始拖"时触发，
+                # 单击不会，所以不会和"摸"的反馈打架。
+                self._stand_up(time.monotonic())
+                self._anim.play("startle", time.monotonic())
 
         if self._dragging and self._drag_moved:
             p = ev.globalPosition().toPoint() - self._drag_grab

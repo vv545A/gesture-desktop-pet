@@ -11,7 +11,9 @@
 三种运行方式
     python -m pet              正常：桌宠 + 摄像头
     python -m pet --demo       无摄像头演示：手是假的，动画是真的（改外观时用）
-    python -m pet --snapshot x.png   离屏渲染四张表情，做美术评审（不需要摄像头/桌面）
+    python -m pet --snapshot x.png          离屏渲染全部立绘帧，做美术评审
+    python -m pet --snapshot-actions y.png  离屏渲染动作表（每个动作抽 5 帧）
+    后两条都不需要摄像头和真实桌面，换素材 / 调动作时靠它们一眼验收。
 """
 
 from __future__ import annotations
@@ -55,12 +57,91 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--headless", action="store_true", help="不开界面，只把事件打到控制台")
     p.add_argument("--snapshot", metavar="PNG", default=None,
                    help="离屏渲染表情表到 PNG（不需要摄像头）")
+    p.add_argument("--snapshot-actions", metavar="PNG", default=None,
+                   dest="snapshot_actions",
+                   help="离屏渲染动作表到 PNG：每个动作抽 5 帧并排（不需要摄像头）")
     p.add_argument("--list-intents", action="store_true", help="打印手势对照表后退出")
     p.add_argument("--verbose", action="store_true", help="打印所有事件（排查用）")
     return p.parse_args(argv)
 
 
 # ------------------------------------------------------------------ 离屏渲染
+def _snapshot_actions(cfg: Config, path: str) -> int:
+    """
+    把 10 个动作各抽 5 个瞬间，排成一张"动作表"。
+
+    为什么需要这张图：动作是**随时间变化**的，单帧截图看不出对不对 ——
+    跳起来那一帧和落地压扁那一帧都是"变了形的立绘"，只有并排摆出来
+    才能判断"这像不像跳"。改完关键帧跑一条命令，一眼看全套。
+    """
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
+    from PyQt6.QtWidgets import QApplication
+
+    from .ui import anim
+    from .ui.paint import PetPose, draw_shadow, ui_font
+    from .ui.sprite import SpriteSet
+
+    _app = QApplication.instance() or QApplication([])   # noqa: F841
+    sp = SpriteSet.from_config(cfg)
+    if sp is None:
+        print("[snapshot] 当前配置走的是矢量版（sprite 为空），动作表只对贴图版有意义")
+        return 1
+
+    steps = (0.08, 0.30, 0.52, 0.74, 0.94)
+    label_w, cell_w, cell_h = 176, 134, 182
+    names = sorted(anim.CLIPS)
+
+    pm = QPixmap(label_w + cell_w * len(steps), cell_h * len(names))
+    pm.fill(QColor(246, 248, 250))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+    body_h = 132.0
+    body_w = body_h * sp.aspect
+
+    for row, name in enumerate(names):
+        clip = anim.CLIPS[name]
+        top = cell_h * row
+        # 隔行浅底，眼睛更容易横着读一行
+        if row % 2 == 0:
+            p.fillRect(0, top, pm.width(), cell_h, QColor(238, 242, 245))
+
+        p.setPen(QColor(56, 74, 84))
+        p.setFont(ui_font(10, bold=True))
+        p.drawText(14, top + int(cell_h * 0.34), cell_w, 20, 0x80, name)
+        p.setPen(QColor(112, 132, 142))
+        p.setFont(ui_font(9))
+        p.drawText(14, top + int(cell_h * 0.34) + 22, cell_w, 20, 0x80,
+                   f"{anim.CLIP_LABEL.get(name, '')} {clip.dur:.2f}s")
+
+        player = anim.AnimPlayer()
+        player.play(name, 0.0)
+        for i, s in enumerate(steps):
+            motion = player.sample(s * clip.dur)
+            frame = (motion.frame if motion is not None and motion.frame
+                     else anim.frame_for_mood("idle"))
+            cx = label_w + cell_w * (i + 0.5)
+            cy = top + cell_h * 0.48
+            pose = PetPose.for_mood("idle")
+            # 影子和真实窗口里一样随跳跃缩放 —— 影子是"钉在地上"的
+            sh = 1.0
+            if motion is not None:
+                sh = max(0.55, min(1.15, 1.0 + motion.dy * 2.2))
+            draw_shadow(p, cx, cy, body_w * sh, body_h * sh)
+            sp.draw(p, cx, cy, body_w, body_h, pose, frame=frame, motion=motion)
+            if i:
+                p.setPen(QColor(210, 218, 224))
+                p.drawLine(label_w + cell_w * i, top + 12,
+                           label_w + cell_w * i, top + cell_h - 12)
+    p.end()
+    pm.save(path)
+    print(f"[snapshot] {path}  ({pm.width()}x{pm.height()})  "
+          f"{len(names)} 个动作 × {len(steps)} 帧")
+    return 0
+
+
 def _snapshot(cfg: Config, path: str) -> int:
     """
     把几种表情并排渲染成一张图。
@@ -79,10 +160,12 @@ def _snapshot(cfg: Config, path: str) -> int:
     sp = SpriteSet.from_config(cfg)
 
     # 贴图版和矢量版的"能看的东西"不一样：
-    #   矢量版看表情 -> 出 6 种情绪；贴图版表情是死的 -> 出正面/侧面/反色/进度环
+    #   矢量版看表情（眼睛/嘴是程序画的）
+    #   贴图版看**帧**：把 assets 目录里每一帧都摆出来 + 一个悬停进度环
+    # 这样换素材之后，一条命令就能确认"7 张图都加载到了、都对得齐"。
     if sp is not None:
-        cells = [("front", 0, 0.0), ("walk", -1, 0.0), ("walk", 1, 0.0),
-                 ("hover", 0, 0.72)]
+        cells = [(f, 0, 0.0) for f in sp.frame_names]
+        cells.append(("hover", 0, 0.72))
     else:
         cells = [("idle", 0, 0.0), ("listen", 0, 0.65), ("happy", 0, 0.0),
                  ("surprised", 0, 0.0), ("shy", 0, 0.0), ("sleepy", 0, 0.0)]
@@ -101,7 +184,8 @@ def _snapshot(cfg: Config, path: str) -> int:
             body_w = body_h * sp.aspect
             draw_shadow(p, cx, cy, body_w, body_h)
             draw_glow(p, cx, cy, body_w, body_h, pose.glow)
-            sp.draw(p, cx, cy, body_w, body_h, pose, facing)
+            sp.draw(p, cx, cy, body_w, body_h, pose,
+                    frame="" if name == "hover" else name, facing=facing)
             draw_aura(p, cx, cy, body_w, body_h, aura)
         else:
             draw_pet(p, cx, cy, 118, 158, pose)
@@ -109,10 +193,10 @@ def _snapshot(cfg: Config, path: str) -> int:
         p.setFont(ui_font(9))
         if sp is None:
             label = name
-        elif name == "walk":
-            label = "walk 左" if facing < 0 else "walk 右"
+        elif name == "hover":
+            label = "hover 悬停环"
         else:
-            label = {"front": "front 正面", "hover": "hover 悬停环"}[name]
+            label = name
         p.drawText(cell_w * i, int(cell_h * 0.92), cell_w, 24, 0x84, label)
     p.end()
     pm.save(path)
@@ -291,6 +375,9 @@ def main(argv=None) -> int:
 
     if args.snapshot:
         return _snapshot(cfg, args.snapshot)
+
+    if args.snapshot_actions:
+        return _snapshot_actions(cfg, args.snapshot_actions)
 
     bus = EventBus(verbose=args.verbose)
     engine = GestureEngine(cfg)
