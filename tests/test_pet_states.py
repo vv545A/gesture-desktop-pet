@@ -118,4 +118,55 @@ win._on_action(ActionDone(intent="pet:sleep", label="睡觉", ok=False,
                           detail="故意失败", bubble="", mood="surprised"))
 check("动作失败时保持清醒", win._asleep is False)
 
+print("== 隔空撸宠 ==")
+
+
+def hands_at(speed: float):
+    """造一帧"看到手"的事件。point 固定，只改速度。"""
+    return HandsSeen(count=1, point=(0.5, 0.5), gesture=None, side="right",
+                     progress=0.0, moving=speed > 0.5, speed=speed)
+
+
+win = make_window()
+# 宠物已经追上来了（_pos 贴住 _target）——这是"手停住了"的信号
+win._pos = win._target
+win._update_petting(100.0, hands_at(0.1))
+check("刚开始摸还没反应（要等 pet_delay）", win._petting is False)
+win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
+check("持续轻抚之后进入被摸状态", win._petting is True)
+
+win._update_petting(101.0, hands_at(2.5))
+check("手快速划过立刻中断", win._petting is False)
+
+win._update_petting(102.0, None)
+check("手离开画面也中断", win._petting is False)
+check("离开后计时清零", win._pet_since == 0.0)
+
+# 睡着的时候不该被"摸"——睡眠锁优先
+win = make_window()
+win._pos = win._target
+fire(win, "pet:sleep")
+win._update_petting(100.0, hands_at(0.1))
+win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
+check("睡着时不会被摸醒", win._petting is False)
+
+# 宠物还没追上来（手刚跳到别处）不算摸：这一条最容易写错，
+# 少了它，手在屏幕上飞快划过时会被判成"连续抚摸"
+win = make_window()
+win._pos = win._target
+far = win._target = win._target + win._target       # 目标瞬间挪远
+win._update_petting(100.0, hands_at(0.1))
+win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
+check("宠物还没跟上时不算摸", win._petting is False)
+check("距离拉远后计时也被清掉", win._pet_since == 0.0)
+
+# 摸够久要主动说一句，否则用户会怀疑功能坏了
+win = make_window()
+win._pos = win._target
+win._update_petting(100.0, hands_at(0.1))
+win._update_petting(100.0 + win.cfg.pet_delay + 0.1, hands_at(0.1))
+check("第一次被摸会应一声", win._pet_said is False)
+win._update_petting(104.0, hands_at(0.1))
+check("摸够 3.5 秒说第二句", win._pet_said is True)
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

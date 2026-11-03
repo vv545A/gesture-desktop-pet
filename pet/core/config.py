@@ -83,6 +83,11 @@ class Config:
     pair_cooldown: float = 0.7
     # 双手同时捏合保持多久 = 总开关（紧急停止）
     toggle_hold: float = 1.0
+    # 隔空撸宠：手速低于这个值（掌长/秒）、且宠物已经贴到手边，就算"在摸它"。
+    # 调低会更难摸到（手稍微一动就断），调高则容易误判成"一直在被摸"。
+    pet_speed: float = 0.9
+    # 摸多久才开始有反应（秒）。太短会在手路过时误触发，太长又让人觉得没反馈。
+    pet_delay: float = 0.7
     zoom_step: float = 0.35          # 预留：双手间距每变多少掌长走一格缩放
     pinch: float = 0.45
     thumb: float = 1.12

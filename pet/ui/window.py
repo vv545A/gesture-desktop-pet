@@ -140,6 +140,11 @@ class PetWindow(QWidget):
         self._follow_backup = ""           # 切到跟鼠标前的模式，醒来时还原
         self._game_on = False              # 正在玩石头剪刀布（游戏时不回角落）
 
+        # ---- 隔空撸宠 ----
+        self._pet_since = 0.0              # 从什么时候开始"被摸"（0 = 当前没在摸）
+        self._petting = False
+        self._pet_said = False             # 这一轮摸够了有没有说过话
+
         # ---- 气泡 ----
         self._bubble = ""
         self._bubble_t0 = 0.0
@@ -266,12 +271,14 @@ class PetWindow(QWidget):
             # 但仍然记录手的位置和时间，醒来时能立刻接上。
             if not self._asleep:
                 self._follow_hand(ev.point)
+            self._update_petting(now, ev)
             # 手在画面里移动 -> 视线跟着手，是最便宜也最有效的"活着"信号
             self._look = (_clamp((ev.point[0] - 0.5) * 2.2, -1.0, 1.0),
                           _clamp((ev.point[1] - 0.5) * 2.0, -1.0, 1.0))
         else:
             self._hand_pt = None
             self._look = (0.0, 0.0)
+            self._update_petting(now, None)
 
         # 悬停进度环：这 0.5 秒的等待画在宠物身上，比画在屏幕角落直观得多
         self._aura_target = float(ev.progress) if ev.count else 0.0
@@ -427,6 +434,46 @@ class PetWindow(QWidget):
         x = _clamp(x, r.left(), r.right() - self.win_w)
         y = _clamp(y, r.top(), r.bottom() - self.win_h)
         self._target = QPointF(x, y)
+
+    def _update_petting(self, now: float, ev) -> None:
+        """
+        隔空撸宠：判断"手是不是在摸它"。
+
+        为什么不用"手掌坐标离宠物多远"当判据：
+            宠物本来就跟着手走，手到哪它到哪——距离永远很近，这个条件恒真，
+            等于没判据。真正有信息量的是**两件事同时成立**：
+              1. 宠物已经追上来了（_pos 贴近 _target）→ 说明手停住了；
+              2. 手还在缓慢移动（速度低于 pet_speed）→ 说明不是在发呆。
+            手停住、宠物贴上来、手又轻轻动，这三件事凑齐，
+            主观感受就是"在它身上摸"。
+        """
+        if ev is None or not ev.count:
+            self._pet_since = 0.0
+            self._petting = False
+            self._pet_said = False
+            return
+
+        settled = (self._pos - self._target).manhattanLength() < 40.0
+        gentle = ev.speed < self.cfg.pet_speed
+
+        if self._asleep or not (settled and gentle):
+            self._pet_since = 0.0
+            self._petting = False
+            self._pet_said = False
+            return
+
+        if self._pet_since <= 0.0:
+            self._pet_since = now
+
+        if not self._petting and now - self._pet_since > self.cfg.pet_delay:
+            self._petting = True
+            self._pose.squash = 0.14          # 被摸到的那一下"弹"一下
+            self.say("唔…", "shy")
+
+        # 摸够久主动说一句：一直干摸没有任何反馈，会让人以为功能没生效
+        if self._petting and not self._pet_said and now - self._pet_since > 3.5:
+            self._pet_said = True
+            self.say("嘿嘿…好舒服", "shy")
 
     def _cursor_on_pet(self, c: Optional[QPoint] = None) -> bool:
         """指针是不是正压在宠物身上（身体矩形 + 一圈余量）。"""
@@ -624,6 +671,10 @@ class PetWindow(QWidget):
         #    mood 超时提前掐断，否则后两秒会变成"站着抖"。
         if now < self._dance_until and not self._asleep:
             self._set_mood("dance", self._dance_until - now)
+        elif self._petting and not self._asleep:
+            # 被摸时表情锁在 shy。不每帧续上的话，shy 那 0.6 秒一过
+            # 就被下面的超时逻辑拉回 idle——摸到一半突然不脸红了，很出戏。
+            self._set_mood("shy", 0.6)
         elif now > self._mood_until and self._mood not in ("idle", "sleepy"):
             self._set_mood("idle", 0.5)
 
@@ -647,6 +698,11 @@ class PetWindow(QWidget):
             target.tilt += 8.0 * amp * math.sin(now * 9.0)
             target.bob += 0.06 * amp * abs(math.sin(now * 5.2))
             target.squash += 0.07 * amp * math.sin(now * 6.4)
+
+        # 4c) 被摸：尾摆加快。比"说句话"更让人上瘾的是"它真的在动"，
+        #     所以撸宠的反馈主要落在尾巴上，台词只做点缀。
+        if self._petting:
+            target.wag += 0.50 * math.sin(now * 7.5)
 
         # 5) 进度环 / 柔光：目标值来自事件，这里追上去，避免一帧闪
         self._aura += (self._aura_target - self._aura) * _clamp(dt * 10, 0, 1)
