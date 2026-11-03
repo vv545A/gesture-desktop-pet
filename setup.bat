@@ -76,7 +76,7 @@ echo [2/3] upgrading pip ...
 
 rem ---------- 3. install dependencies ----------
 echo [3/3] installing dependencies - this may take a few minutes ...
-echo        mediapipe / opencv / numpy / pillow / PyQt6, about 280 MB in total
+echo        mediapipe / opencv / numpy / pillow / PySide6 + PyYAML, about 380 MB in total
 echo.
 "%VPY%" -m pip install -r requirements.txt
 if errorlevel 1 (

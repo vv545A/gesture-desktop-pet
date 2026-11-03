@@ -19,11 +19,13 @@
 
 from __future__ import annotations
 
+import logging
 import queue
-import traceback
 from typing import Callable, List, Tuple, Type
 
 from .events import Event
+
+log = logging.getLogger(__name__)
 
 
 class EventBus:
@@ -64,16 +66,18 @@ class EventBus:
 
     def _deliver(self, ev: Event) -> None:
         if self.verbose:
-            print(f"[bus] {type(ev).__name__} {ev}")
+            log.debug("%s %s", type(ev).__name__, ev)
         for etype, fn in self._subs:
             if isinstance(ev, etype):
                 try:
                     fn(ev)
                 except Exception:
-                    # 界面层出错不能反噬感知层：打出来，继续下一个订阅者
-                    print(f"[bus] 订阅者 {getattr(fn, '__qualname__', fn)} 处理 "
-                          f"{type(ev).__name__} 时出错：")
-                    traceback.print_exc()
+                    # 界面层出错不能反噬感知层：记下来，继续下一个订阅者。
+                    # exc_info=True 会带上完整栈——这类错误最难复现，
+                    # 只留一句 "出错了" 等于没记。
+                    log.error("订阅者 %s 处理 %s 时出错",
+                              getattr(fn, "__qualname__", fn),
+                              type(ev).__name__, exc_info=True)
 
     # ---------------------------------------------------------------- 诊断
     @property

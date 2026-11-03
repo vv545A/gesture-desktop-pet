@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -32,11 +33,18 @@ from face_guard import FaceGuard
 from hand_tracker import HandTracker
 
 from ..core.bus import EventBus
-from ..core.config import GESTURE_MODEL, HAND_MODEL, FACE_MODEL, Config
+from ..core.config import (EMOTION_MODEL, FACE_MODEL, GESTURE_MODEL,
+                           HAND_MODEL, Config)
 from ..core.engine import GestureEngine
-from ..core.events import (ControlToggled, HandsSeen, PerceptionFailed,
-                           PerceptionReady)
+from ..core.events import (ControlToggled, EmotionChanged, HandsSeen,
+                           PerceptionFailed, PerceptionReady, PetGame,
+                           PresenceChanged)
+from ..game.rps import CHOICES, LABEL, RPSGame
 from ..intent.router import IntentRouter
+from .emotion import EmotionDetector
+from .presence import PresenceDetector
+
+log = logging.getLogger(__name__)
 
 
 class PerceptionWorker(threading.Thread):
@@ -54,6 +62,31 @@ class PerceptionWorker(threading.Thread):
         self.fps = 0.0
         self.n_frames = 0
 
+        # ---- 小游戏 ----
+        # 游戏状态住在感知线程：它每帧要 tick 一次，而判定的输入（手势）
+        # 也在这条线程上产生。放在界面线程反而要跨线程传手势。
+        self.game = RPSGame()
+        self.engine.set_game_hook(self._on_game_gesture)
+        self._game_sig = None          # 上一次广播过的状态签名（用来节流）
+        self._game_pending = False     # 待启动：由主循环用统一时钟启动
+        self._game_was_active = False  # 上一帧是否在游戏里（用来发"结束"那一次）
+
+        # ---- 在场检测 / 情绪感知 ----
+        # 检测器**常驻创建**，是否真的调用由 cfg 决定（每帧读一次）。
+        # 为什么不按 cfg 决定创建：右键菜单能随时开关，若关闭时不创建对象，
+        # 打开开关之后就没有东西可用了，只能重启程序——那就不叫开关了。
+        self.presence = None
+        det = PresenceDetector(
+            FACE_MODEL, min_conf=0.5,
+            interval=self.cfg.presence_interval,
+            away_after=self.cfg.away_after,
+        )
+        self.presence = det if det.enabled else None
+
+        self.emotion = None
+        emo = EmotionDetector(EMOTION_MODEL, interval=self.cfg.emotion_interval)
+        self.emotion = emo if emo.enabled else None
+
     # ---------------------------------------------------------------- 生命周期
     def stop(self) -> None:
         self._stop.set()
@@ -70,19 +103,52 @@ class PerceptionWorker(threading.Thread):
     def active(self) -> bool:
         return self._active.is_set()
 
+    # ---------------------------------------------------------------- 小游戏
+    def set_game(self, on: bool) -> bool:
+        """
+        进入/退出石头剪刀布。
+
+        注意 `on=True` 只是**置一个待启动标志**，真正 start() 在主循环里做。
+        因为游戏时钟必须和引擎用同一个时间源（主循环用 perf_counter），
+        而这里是被 Qt 主线程调用的——直接取时间会混进两种时钟，
+        倒数会算出负数或者几百万秒。
+        """
+        if on:
+            self._game_pending = True
+        else:
+            self.game.stop()
+            self._game_pending = False
+            self._game_sig = None
+        return bool(on)
+
+    def _on_game_gesture(self, gesture: str, now: float) -> bool:
+        """
+        游戏模式下拦截手势。返回 True = 这一下归游戏，不再走正常映射。
+
+        只拦三种"出拳"手势。不拦的话，比个 ✊ 会一边出石头一边让它睡觉——
+        同一次动作两个结果，看起来就是 bug。而 ☝️ 👍 🤏 和游戏不冲突，
+        没必要一起关掉，留着还能随时开浏览器或退出跟随。
+        """
+        if not self.game.active:
+            return False
+        if gesture not in CHOICES:
+            return False
+        self.game.play(gesture, now)
+        return True
+
     # ---------------------------------------------------------------- 主流程
     def run(self) -> None:
         tracker = None
         try:
-            print("[perception] 加载模型…")
+            log.info("加载模型…")
             t0 = time.perf_counter()
             tracker = HandTracker(
                 HAND_MODEL, num_hands=2, min_detect=0.5,
                 hand_mode=self.cfg.hands, swap_hands=self.cfg.swap_hands,
                 gesture_model=GESTURE_MODEL if self.cfg.use_gesture_model else None,
             )
-            print(f"[perception] 就绪 {time.perf_counter() - t0:.2f}s"
-                  f"（{'手势模型' if tracker.use_model else '几何规则'}）")
+            log.info("就绪 %.2fs（%s）", time.perf_counter() - t0,
+                     "手势模型" if tracker.use_model else "几何规则")
 
             face_guard = None
             if self.cfg.face_guard:
@@ -92,13 +158,17 @@ class PerceptionWorker(threading.Thread):
 
             self._loop(tracker, face_guard)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            # exception 会带上完整栈：感知线程的崩溃是最难复现的一类
+            log.exception("感知线程异常")
             self.bus.post(PerceptionFailed(message=f"感知线程异常：{e}"))
         finally:
             if tracker is not None:
                 tracker.close()
-            print("[perception] 已停止")
+            if self.presence is not None:
+                self.presence.close()
+            if self.emotion is not None:
+                self.emotion.close()
+            log.info("已停止")
 
     # ---------------------------------------------------------------- 主循环
     def _loop(self, tracker: HandTracker, face_guard) -> None:
@@ -120,7 +190,7 @@ class PerceptionWorker(threading.Thread):
                     except Exception:
                         pass
                     cap = None
-                    print("[perception] 已释放摄像头（手势识别关闭）")
+                    log.info("已释放摄像头（手势识别关闭）")
                 last_ui = 0.0
                 time.sleep(0.1)
                 continue
@@ -135,7 +205,7 @@ class PerceptionWorker(threading.Thread):
                             message=f"打不开摄像头 {self.cfg.cam}（被其它程序占用？）"))
                     time.sleep(1.0)          # 隔一秒重试，插上摄像头就能自己好
                     continue
-                print("[perception] 摄像头已打开")
+                log.info("摄像头已打开")
                 if first_ready:
                     first_ready = False
                     self.bus.post(PerceptionReady(message="摄像头就绪"))
@@ -146,7 +216,7 @@ class PerceptionWorker(threading.Thread):
 
             ok, frame = cap.read()
             if not ok:
-                print("[perception] 读帧失败，重连摄像头")
+                log.warning("读帧失败，重连摄像头")
                 try:
                     cap.release()
                 except Exception:
@@ -167,8 +237,44 @@ class PerceptionWorker(threading.Thread):
                 hands, _dropped = face_guard.filter(frame, hands)   # 先剔掉"脸被当成手"
 
             now = time.perf_counter()
+
+            # 在场检测：内部自己降到 2Hz，只在"人来了/人走了"那一刻返回非 None
+            if self.cfg.presence and self.presence is not None:
+                changed = self.presence.update(frame, now, has_hand=bool(hands))
+                if changed is not None:
+                    self.bus.post(PresenceChanged(present=changed))
+
+            # 情绪感知：内部 1Hz，只在情绪真的变了时返回
+            if self.cfg.emotion and self.emotion is not None:
+                emo = self.emotion.update(frame, now)
+                if emo is not None:
+                    self.bus.post(EmotionChanged(emotion=emo[0], strength=emo[1]))
+
+            # 待启动的游戏在这里起：和引擎共用同一个时钟（perf_counter）
+            if self._game_pending:
+                self._game_pending = False
+                self.game.start(now)
+                self._game_sig = None
+
             out = self.engine.update(hands, now)
             self.n_frames += 1
+
+            # 小游戏：每帧推进一次，但只在快照真的变了才广播——
+            # 倒数每秒变一格、结果每局变一次，30FPS 全发纯属浪费带宽。
+            snap = self.game.tick(now)
+            sig = (snap.phase, snap.count, snap.round)
+            if sig != self._game_sig:
+                self._game_sig = sig
+                if snap.active or self._game_was_active:
+                    r = snap.round
+                    self.bus.post(PetGame(
+                        phase=snap.phase, count=snap.count,
+                        player=LABEL.get(r.player, r.player) if r else "",
+                        pet=LABEL.get(r.pet, r.pet) if r else "",
+                        result=r.result if r else -1,
+                        score=snap.score, active=snap.active,
+                    ))
+                self._game_was_active = snap.active
 
             # 结果 -> 事件。执行放在这里（不是界面线程），避免动画掉帧。
             if out.toggled is not None:
@@ -201,7 +307,7 @@ class PerceptionWorker(threading.Thread):
                 if self.fps < 5:
                     slow += 1
                     if slow >= 3:
-                        print(f"[perception] 帧率只有 {self.fps:.1f}，摄像头可能被占用")
+                        log.warning("帧率只有 %.1f，摄像头可能被占用", self.fps)
                         slow = 0
 
         if cap is not None:

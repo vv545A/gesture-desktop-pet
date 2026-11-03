@@ -7,16 +7,18 @@
     如果把映射写死在判定代码里，每次改主意都要动核心逻辑。
     现在改这张表就行（一行一个功能）。
 
-**分工按手的数量来**（2026-11 调整）：
-    单手 = 操作窗口（这是"隔空操控电脑"的主线，一个手就能做完，最稳）
+**分工按手的数量来**（2026-11 转向宠物互动）：
+    单手 = 和桌宠互动（✌️跳舞 / ✊睡觉 / ✋唤醒 / ☝️跟随 / 👍开浏览器）
     双手 = 音乐播放（两只手做同一个手势，是有仪式感的"第二层"，
            也和单手彻底分开，不会互相压到）
 
-为什么把窗口操作放在单手：
-    双手做「连续量」（捏合后拉开缩放）在真实摄像头上很难成立——两只手要
-    同时保持捏合并同步移动，丢一帧就断。而窗口操作是**离散命令**，单手
-    悬停 0.5 秒就够，抗噪得多。双手这边只留同手势配对，两个手都做 FIST
-    才静音，两只手一起出现才算数，误触概率很低。
+为什么把宠物互动放在单手：
+    单手是"对着宠物说话"——一个手势一个反应，语义直观、学习成本为零。
+    双手留给音乐，是因为"两只手同一个手势"本身误触率极低，正好配
+    "不希望误触"的系统操作；而宠物互动就算误触一次也只是它多跳了
+    一段舞，代价可以忽略。
+    窗口操作（最大化/贴边/置顶）没删，全部留在 ACTION_CATALOG 里，
+    想切回来在对照表里改绑即可 —— 默认表只决定"出厂状态"。
 
 Intent.key 的四种取值：
     actions.WINDOW_ACTIONS 里的窗口动作   （win_max / win_snap_left …）
@@ -39,9 +41,10 @@ class Intent:
     mood: str = "happy"
 
 
-# ------------------------------------------------------------------ 单手：窗口
-# 左右手分开写：☝️ 指哪边、窗口就贴哪边——这是"区分左右手"最直观的用法。
-SINGLE_HINT = "单手 = 操作窗口"
+# ------------------------------------------------------------------ 单手：宠物
+# 左右手各写一份：对照表里能看到"左手/右手"两行，用户想给两只手设不同动作时
+# 也有地方改（apply_bindings 支持 left:XXX 单独覆盖）。
+SINGLE_HINT = "单手 = 和桌宠互动"
 
 #: 单手能用的手势（对照表页面的左列按这个顺序排）
 SINGLE_GESTURES = ("OPEN_PALM", "FIST", "VICTORY", "POINT",
@@ -87,31 +90,43 @@ ACTION_CATALOG: Dict[str, Tuple[str, str]] = {
     "enter": ("回车", "calm"),
     "scroll_up": ("向上滚", "calm"),
     "scroll_down": ("向下滚", "calm"),
-    # ---- 只让桌宠反应，不碰系统 ----
+    # ---- 只让桌宠反应，不碰系统（宠物互动主线，永远安全）----
+    # 这五个是 GesturePet 的 MVP 主线：手势先让宠物有反应，
+    # 系统副作用只留 👍 一个，且过白名单。
+    "pet:dance": ("跳舞", "dance"),
+    "pet:sleep": ("睡觉", "sleepy"),
+    "pet:wake": ("唤醒", "happy"),
+    "pet:follow": ("跟随鼠标", "listen"),
     "pet:pat": ("摸摸桌宠", "shy"),
+    # ---- 带系统副作用的动作（受 BROWSER_ALLOWLIST 限制）----
+    "open_browser": ("打开浏览器", "proud"),
 }
 
 _DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = {
-    # ✋ 张开 -> 最大化 / 还原（同一个手势，按窗口当前状态决定做哪一半）
-    ("right", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
-    ("left", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
-    # ✊ 握拳 -> 最小化
-    ("right", "FIST"): Intent("win_min", "最小化", "先收起来～"),
-    ("left", "FIST"): Intent("win_min", "最小化", "先收起来～"),
-    # ✌️ 剪刀手 -> 切换窗口
-    ("right", "VICTORY"): Intent("alt_tab", "切换窗口", "换一个窗口～"),
-    ("left", "VICTORY"): Intent("alt_tab", "切换窗口", "换一个窗口～"),
-    # ☝️ 食指 -> 贴左/右半屏（左手贴左、右手贴右，指哪边贴哪边）
-    ("left", "POINT"): Intent("win_snap_left", "贴左半屏", "靠左边站好"),
-    ("right", "POINT"): Intent("win_snap_right", "贴右半屏", "靠右边站好"),
-    # 👍 点赞 -> 置顶 / 取消置顶
-    ("right", "THUMB_UP"): Intent("win_topmost", "窗口置顶", "钉在最上层！"),
-    ("left", "THUMB_UP"): Intent("win_topmost", "窗口置顶", "钉在最上层！"),
-    # 👎 踩 -> 全部收起（显示桌面，再比一次就回来）
-    ("right", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…"),
-    ("left", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…"),
-    # 🤏 捏合不驱动任何系统功能，只让桌宠有反应 ——
-    # 这是"氛围感优先、绝不添乱"的示范：捏一下就是撸它一下。
+    # ✌️ 剪刀手 -> 跳舞。宠物最先要有的反应，也是五指里最好认的形状
+    ("right", "VICTORY"): Intent("pet:dance", "跳舞", "看我跳一个！"),
+    ("left", "VICTORY"): Intent("pet:dance", "跳舞", "看我跳一个！"),
+    # ✊ 握拳 -> 睡觉。这是**持久状态**：睡着后不理手，直到 ✋ 唤醒它
+    ("right", "FIST"): Intent("pet:sleep", "睡觉", "呼…先睡会儿", "sleepy"),
+    ("left", "FIST"): Intent("pet:sleep", "睡觉", "呼…先睡会儿", "sleepy"),
+    # ✋ 张开 -> 唤醒。顺带解除睡眠锁，让宠物重新跟手
+    ("right", "OPEN_PALM"): Intent("pet:wake", "唤醒", "我醒啦！"),
+    ("left", "OPEN_PALM"): Intent("pet:wake", "唤醒", "我醒啦！"),
+    # ☝️ 食指 -> 切换「跟随鼠标」。再比一次或 ✊ 睡觉都会退出
+    ("right", "POINT"): Intent("pet:follow", "跟随鼠标", "跟着你走～", "listen"),
+    ("left", "POINT"): Intent("pet:follow", "跟随鼠标", "跟着你走～", "listen"),
+    # 👍 点赞 -> 打开浏览器。**默认表里唯一带系统副作用的手势**，且过白名单
+    ("right", "THUMB_UP"): Intent("open_browser", "打开浏览器", "帮你开个网页～",
+                                  "proud"),
+    ("left", "THUMB_UP"): Intent("open_browser", "打开浏览器", "帮你开个网页～",
+                                 "proud"),
+    # 👎 踩 -> 保留的窗口能力（不在 MVP 主线里，但留着好使，
+    #         想换成纯宠物动作，在对照表里改绑即可）
+    ("right", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…",
+                                    "calm"),
+    ("left", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…",
+                                   "calm"),
+    # 🤏 捏合不驱动任何系统功能，只让桌宠有反应
     ("right", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
     ("left", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
 }
@@ -199,13 +214,29 @@ def binding_key(side: str, gesture: str) -> str:
     return f"{side}:{gesture}"
 
 
+#: 窗口/键盘动作的台词兜底表。
+#: 这些动作默认已不绑在手势上（主线改成宠物互动了），但用户在对照表里
+#: 把它们改绑回来时，仍然要有一句对应的台词——否则会出现"动作做了、
+#: 桌宠一声不吭"的割裂感。_bubble_of 查不到默认表就落在这里。
+_FALLBACK_BUBBLE: Dict[str, str] = {
+    "win_max": "变——大！",
+    "win_min": "先收起来～",
+    "win_topmost": "钉在最上层！",
+    "win_snap_left": "靠左边站好",
+    "win_snap_right": "靠右边站好",
+    "win_desktop": "都先让让…",
+    "alt_tab": "换一个窗口～",
+    "open_browser": "帮你开个网页～",
+}
+
+
 def _bubble_of(action: str) -> str:
     """同一个动作在默认表里的台词 —— 换绑之后台词也该跟着动作走。"""
     for table in (_DEFAULT_SINGLE.values(), _DEFAULT_PAIR.values()):
         for it in table:
             if it.key == action:
                 return it.bubble
-    return ""
+    return _FALLBACK_BUBBLE.get(action, "")
 
 
 def _intent_for(action: str) -> Optional[Intent]:

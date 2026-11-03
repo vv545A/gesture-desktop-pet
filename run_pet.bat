@@ -30,13 +30,13 @@ if not defined PY (
 )
 
 rem Dependency pre-check: fail fast with a readable message instead of a traceback
-"%PY%" -c "import PyQt6, mediapipe, cv2, numpy" >nul 2>&1
+"%PY%" -c "import PySide6, yaml, mediapipe, cv2, numpy" >nul 2>&1
 if errorlevel 1 (
     echo [error] Interpreter lacks required packages:
     echo     %PY%
     echo.
     echo   Install them with:  "%PY%" -m pip install -r requirements.txt
-    echo   ^(PyQt6 is the UI layer; mediapipe/opencv are the perception layer^)
+    echo   ^(PySide6 is the UI layer; mediapipe/opencv are the perception layer^)
     pause
     exit /b 1
 )

@@ -24,8 +24,8 @@ from __future__ import annotations
 import os
 from typing import Dict, Optional, Tuple
 
-from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QGuiApplication, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QGuiApplication, QPainter, QPixmap
 
 from ..core.config import Config, sprite_path
 from .anim import Motion

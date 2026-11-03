@@ -20,28 +20,31 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Dict
 
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout,
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QPolygonF
+from PySide6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout,
                              QLabel, QPushButton, QTabWidget, QVBoxLayout,
                              QWidget)
 
 from ..core.events import PetSay
 from ..intent import mapping
 
-# 下拉框的分组顺序：先窗口（单手主线），再媒体/键盘，最后桌宠专属。
+# 下拉框的分组顺序：先桌宠互动（现在的手势主线），再窗口，最后媒体/键盘。
 # 顺序本身就是一种引导 —— 用户改单手手势时，最可能想选的就在最上面。
+# 窗口操作没删，只是退到第二组：它仍然可以绑回单手，只是不再是默认玩法。
 _ORDER = (
+    "pet:dance", "pet:sleep", "pet:wake", "pet:follow", "pet:pat",
+    "open_browser",
     "win_max", "win_min", "win_topmost", "win_snap_left", "win_snap_right",
     "win_desktop",
     "play_pause", "mute", "vol_up", "vol_down", "next_track", "prev_track",
     "alt_tab", "page_down", "page_up",
     "escape", "space", "enter", "scroll_up", "scroll_down",
-    "pet:pat",
 )
 
 _STYLE = """
@@ -146,7 +149,7 @@ class BindingsDialog(QDialog):
         root.addWidget(hint)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_single(), "单手 · 窗口")
+        tabs.addTab(self._build_single(), "单手 · 桌宠")
         tabs.addTab(self._build_pair(), "双手 · 音乐")
         root.addWidget(tabs, 1)
 
@@ -239,7 +242,7 @@ class BindingsDialog(QDialog):
         return page
 
     def _center(self) -> None:
-        from PyQt6.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication
 
         scr = QGuiApplication.primaryScreen()
         if scr is None:
@@ -275,7 +278,7 @@ class BindingsDialog(QDialog):
         try:
             self.cfg.save()
         except Exception as e:
-            print(f"[bindings] 保存配置失败：{e}")
+            logging.getLogger(__name__).error("保存配置失败：%s", e)
 
     def _save(self) -> None:
         self._apply(self._collect())
@@ -291,5 +294,5 @@ class BindingsDialog(QDialog):
         try:
             self.cfg.save()
         except Exception as e:
-            print(f"[bindings] 保存配置失败：{e}")
+            logging.getLogger(__name__).error("保存配置失败：%s", e)
         self.bus.post(PetSay(text="都改回出厂设置啦", mood="calm", anim="nod"))

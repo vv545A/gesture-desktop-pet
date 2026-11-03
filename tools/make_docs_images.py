@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 import time
 import sys
 
@@ -31,10 +32,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-from PyQt6.QtCore import QPointF, QRectF, Qt                          # noqa: E402
-from PyQt6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,     # noqa: E402
+from PySide6.QtCore import QPointF, QRectF, Qt                          # noqa: E402
+from PySide6.QtGui import (QColor, QImage, QPainter, QPen, QPixmap,     # noqa: E402
                          QPolygonF)
-from PyQt6.QtWidgets import QApplication                              # noqa: E402
+from PySide6.QtWidgets import QApplication                              # noqa: E402
 
 from pet.core.bus import EventBus                                     # noqa: E402
 from pet.core.config import Config                                    # noqa: E402
@@ -57,7 +58,7 @@ class _FakeControl:
 
     为什么必须有：`ControlCenter` 会开摄像头、起线程 —— 出文档图不该碰硬件。
     但 `ControlPanel.paintEvent` 会读 `control.enabled`，读到 None 会抛异常；
-    **PyQt6 里虚拟函数抛异常是直接 abort 进程**（不是弹 traceback），
+    **PySide6 里虚拟函数抛异常是直接 abort 进程**（不是弹 traceback），
     所以少了这个桩，脚本会一声不响地 0 退出、图却是旧的。
     """
 
@@ -121,12 +122,38 @@ def mock_window(p: QPainter, rect: QRectF, title: str, rows: int = 6,
             text(p, r.left(), r.top() + 6, r.width(), "按钮", 9, MUTED)
 
 
+def _cfg() -> Config:
+    """读本机真实配置。
+
+    早先这里硬写 pet_config.json —— 那是上一代配置格式，现在已经迁到
+    gestures.yaml。显式传一个不存在的路径会**新建**一份默认配置，
+    于是文档图里画的是一只"代码默认值里的宠物"，而不是你正在用的那只。
+    """
+    return Config.load()
+
+
+def _demo_bond():
+    """造一份"已经相处了一阵子"的存档，只为把面板顶部的亲密度板画出来。
+
+    真实运行里没有存档时面板不显示这一块（关系不该是编出来的），
+    但文档图需要展示它的样子。
+    """
+    from datetime import date, timedelta
+
+    from pet.core.bond import Bond, BondTracker
+
+    started = (date.today() - timedelta(days=8)).isoformat()
+    bond = Bond(points=132.0, interactions=96, first_seen=started,
+                last_seen=date.today().isoformat())
+    return BondTracker(os.path.join(tempfile.gettempdir(), "docs_bond.json"), bond)
+
+
 def _make_window(mood: str = "idle", bubble: str = "", dock_title: str = "",
                  sit: bool = False, enabled: bool = True) -> PetWindow:
     """搭一个"和真实运行一模一样"的桌宠窗口，摆好状态，等着被截。"""
     from pet.core.windowinfo import WindowInfo
 
-    cfg = Config.load(os.path.join(HERE, "pet_config.json"))
+    cfg = _cfg()
     win = PetWindow(EventBus(), cfg, control=_FakeControl())
     win.resize(win.win_w, win.win_h)
     win._enabled = enabled
@@ -283,8 +310,9 @@ def make_panel(path: str) -> None:
     """三格：运行中 / 关掉后 / 控制面板。全部是真实控件的截图，不画假 UI。"""
     from pet.ui.panel import ControlPanel
 
-    cfg = Config.load(os.path.join(HERE, "pet_config.json"))
-    win = PetWindow(EventBus(), cfg, control=_FakeControl())
+    cfg = _cfg()
+    win = PetWindow(EventBus(), cfg, control=_FakeControl(),
+                    bond=_demo_bond())
     win.resize(win.win_w, win.win_h)
     win._mood = "idle"
     win._tick()
@@ -349,12 +377,38 @@ def make_moods(path: str) -> None:
     print(f"[docs] {path}")
 
 
+def make_bindings(path: str) -> None:
+    """
+    手势对照表页面。
+
+    这张图以前是手工截的，换了页签名/换了立绘就永久过期 —— 读者看到的
+    是"上一版的界面"。这里改成和别的一样现场渲染，写完代码跑一次即可。
+    """
+    from PySide6.QtGui import QPixmap as _QPixmap
+    from PySide6.QtCore import Qt as _Qt
+
+    from pet.ui.bindings import BindingsDialog
+
+    win = PetWindow(EventBus(), _cfg(), control=_FakeControl())
+    win.resize(win.win_w, win.win_h)
+
+    dlg = BindingsDialog(win)
+    dlg.setAttribute(_Qt.WidgetAttribute.WA_TranslucentBackground, False)
+    dlg.adjustSize()
+    pm = _QPixmap(dlg.size())
+    pm.fill(_Qt.GlobalColor.white)
+    dlg.render(pm)
+    pm.save(path)
+    print(f"[docs] {path}  ({pm.width()}x{pm.height()})")
+
+
 def main() -> int:
     _app = QApplication.instance() or QApplication([])
     make_dock(os.path.join(HERE, "pet_dock.png"))
     make_cursor(os.path.join(HERE, "pet_cursor_follow.png"))
     make_panel(os.path.join(HERE, "pet_ui_panel.png"))
     make_moods(os.path.join(HERE, "pet_moods.png"))
+    make_bindings(os.path.join(HERE, "pet_bindings.png"))
     return 0
 
 

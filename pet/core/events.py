@@ -116,3 +116,47 @@ class PetSay(Event):
     # 加这个字段是因为"说话"和"做动作"经常是同一件事的两半：
     # 保存成功该点一下头、被关掉该瘫下去 —— 分开传两条事件反而容易错位。
     anim: str = ""
+
+
+@dataclass
+class PresenceChanged(Event):
+    """
+    人在 / 人走。**只在变化时发**，不是每帧。
+
+    和 ControlToggled 一个套路：状态型的信号只在跳变时广播，
+    订阅方不用自己记上一次是什么。
+    """
+
+    present: bool = True
+
+
+@dataclass
+class EmotionChanged(Event):
+    """
+    用户情绪变了（来自面部表情，只在变化时发）。
+
+    注意这是**用户的**情绪，不是宠物的表情。宠物怎么反应由界面层决定——
+    感知层只负责"我看到他在笑"，不负责"所以我要怎么样"。
+    """
+
+    emotion: str = "neutral"       # neutral / happy / tired / frown
+    strength: float = 0.0
+
+
+@dataclass
+class PetGame(Event):
+    """
+    小游戏状态（石头剪刀布）。
+
+    界面**只负责显示**：倒数是几、谁出了什么、几比几。所有判定都在
+    `pet/game/rps.py` 里做完——界面拿到的已经是结论，不是原料。
+    这条边界一破，游戏规则就会散进 UI 代码，再也没法单测。
+    """
+
+    phase: str = "idle"        # idle / countdown / armed / result
+    count: int = 0             # 倒数剩余秒
+    player: str = ""           # 玩家出的（已转成中文，如"石头"）
+    pet: str = ""              # 宠物出的（已转成中文）
+    result: int = -1           # 0 赢 / 1 输 / 2 平（-1 = 本轮还没有结果）
+    score: Tuple[int, int, int] = (0, 0, 0)
+    active: bool = True

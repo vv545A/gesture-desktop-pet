@@ -11,12 +11,44 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+try:
+    import yaml
+except ImportError:                     # 极小概率：装依赖时漏了 PyYAML
+    yaml = None
+
+log = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_CONFIG = os.path.join(HERE, "pet_config.json")
+
+#: 默认配置文件用 YAML 而不是 JSON。
+#: 理由很实际：调手感要动十几个数值（悬停时长、跟随增益、冷却……），
+#: JSON 不能写注释，改完过两个月自己都看不懂当初为什么设成 0.45。
+DEFAULT_CONFIG = os.path.join(HERE, "gestures.yaml")
+
+#: 旧版配置文件。存在时自动读它并落成 YAML，不用用户手动搬。
+LEGACY_CONFIG = os.path.join(HERE, "pet_config.json")
+
+#: 亲密度的存档。刻意和配置分开放：配置是"用户意图"，亲密度是"它记住的事"，
+#: 点一次"恢复默认配置"不该把相处记录一起清掉。
+BOND_FILE = os.path.join(HERE, "bond.json")
+
+#: 生成新配置时写进文件头的说明。yaml.safe_dump 不会保留注释，
+#: 所以这段是拼在 dump 结果前面的纯文本。
+CONFIG_HEADER = """\
+# ============================================================
+#  GesturePet 配置文件
+#
+#  改完保存、重启程序即可生效，不需要动代码。
+#  只写你想改的项；没写的会自动用程序里的默认值。
+#  bindings 留空 = 用默认手势表（✌️跳舞 / ✊睡觉 / ✋唤醒 / ☝️跟随 / 👍浏览器）
+# ============================================================
+
+"""
 
 # 配置文件格式版本。1 = 鲸鱼娘那版（没有这个键就按 1 算），2 = 换新立绘之后。
 CURRENT_CONFIG_VERSION = 2
@@ -26,6 +58,9 @@ MODEL_DIR = os.path.join(HERE, "models")
 HAND_MODEL = os.path.join(MODEL_DIR, "hand_landmarker.task")
 GESTURE_MODEL = os.path.join(MODEL_DIR, "gesture_recognizer.task")
 FACE_MODEL = os.path.join(MODEL_DIR, "blaze_face_short_range.tflite")
+# 表情模型（3.6MB，带 52 个 blendshape 系数）。缺失时情绪感知自动关闭。
+# 不在仓库里，需要单独下载（见 README 的"情绪感知"一节）。
+EMOTION_MODEL = os.path.join(MODEL_DIR, "face_landmarker.task")
 
 
 def sprite_path(name: str) -> str:
@@ -50,6 +85,15 @@ class Config:
     swap_hands: bool = False
     face_guard: bool = True
     use_gesture_model: bool = True
+    # 在场检测：用本地人脸检测判断人在不在，人走了宠物打盹、人回来主动迎接。
+    # 只判断"有没有脸"，不存图、不识别身份。
+    presence: bool = True
+    presence_interval: float = 0.5   # 多久查一次（调低反应快、更费 CPU）
+    away_after: float = 6.0          # 多久没看到人算离开（要能容忍低头捡东西）
+    # 情绪感知：从面部动作系数推断"在笑/累了/皱眉"，用来切换陪伴方式。
+    # 开销比在场检测高（约 4~9ms），所以默认 1 秒一次。
+    emotion: bool = True
+    emotion_interval: float = 1.0
 
     # ---------------- 判定（与 main.py 的默认值保持一致，手感才不会割裂） ----
     hold: float = 0.5                # 悬停多久确认（单手窗口操作）
@@ -63,6 +107,11 @@ class Config:
     pair_cooldown: float = 0.7
     # 双手同时捏合保持多久 = 总开关（紧急停止）
     toggle_hold: float = 1.0
+    # 隔空撸宠：手速低于这个值（掌长/秒）、且宠物已经贴到手边，就算"在摸它"。
+    # 调低会更难摸到（手稍微一动就断），调高则容易误判成"一直在被摸"。
+    pet_speed: float = 0.9
+    # 摸多久才开始有反应（秒）。太短会在手路过时误触发，太长又让人觉得没反馈。
+    pet_delay: float = 0.7
     zoom_step: float = 0.35          # 预留：双手间距每变多少掌长走一格缩放
     pinch: float = 0.45
     thumb: float = 1.12
@@ -78,8 +127,14 @@ class Config:
 
     # ---------------- 桌宠 ----------------
     pet_name: str = "小桃"
-    pet_scale: float = 1.12
-    follow: str = "hand"             # hand / cursor / window / corner
+    pet_scale: float = 1.12          # 新立绘比旧鲸鱼娘细一圈，1.0 会显得太小
+    # 👍 打开的页面。改成 https://www.bing.com/search?q=关键词 就变成"隔空搜索"。
+    # 必须命中 actions.BROWSER_ALLOWLIST 的前缀，配错了会被拒绝并记一条警告。
+    browser_url: str = "https://www.bing.com/"
+    # hand = 跟着手掌跑 / cursor = 跟在鼠标后 / window = 吸附前台窗口 / corner = 守在角落
+    # 默认 corner：绝大多数时候用户只是要它在旁边待着，
+    # "跟着手到处跑"更适合演示，长期用会显得挡事。
+    follow: str = "corner"
     follow_gain: float = 1.6         # 手掌位移 -> 屏幕位移的放大倍数
     # 跟鼠标：身体中心与指针保持多远（太近会盖住指针，点什么都点不到）
     cursor_trail: float = 110.0
@@ -115,36 +170,87 @@ class Config:
     dry_run: bool = False            # 只判不发（等价 main.py --test）
 
     # ---------------------------------------------------------------- 持久化
-    def save(self, path: str = DEFAULT_CONFIG) -> None:
+    @staticmethod
+    def _read(path: str) -> Dict[str, Any]:
+        """按扩展名选解析器：.yaml/.yml 走 YAML，其余走 JSON。"""
+        use_yaml = path.lower().endswith((".yaml", ".yml")) and yaml is not None
+        with open(path, "r", encoding="utf-8") as f:
+            return (yaml.safe_load(f) if use_yaml else json.load(f)) or {}
+
+    @staticmethod
+    def _dump(data: Dict[str, Any], path: str) -> None:
+        use_yaml = path.lower().endswith((".yaml", ".yml")) and yaml is not None
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+            if use_yaml:
+                f.write(CONFIG_HEADER)
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False,
+                               default_flow_style=False)
+            else:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def save(self, path: str = DEFAULT_CONFIG) -> None:
+        self._dump(asdict(self), path)
 
     @classmethod
-    def load(cls, path: str = DEFAULT_CONFIG) -> "Config":
-        """读 JSON；文件不存在就写一份默认的，方便用户直接改。"""
+    def load(cls, path: Optional[str] = None) -> "Config":
+        """
+        读配置。查找顺序：
+            1. 显式传入的 path（命令行 --config）
+            2. gestures.yaml（新默认）
+            3. pet_config.json（旧版，读到就顺手迁移成 YAML）
+            4. 都没有 -> 生成一份带注释的 gestures.yaml
+
+        读取失败**不让程序崩**：退回默认值 + 一句能看懂的话。
+        配置文件被手改坏是常态，那不该等于"打不开程序"。
+        """
         cfg = cls()
-        if os.path.exists(path):
+        target = path or DEFAULT_CONFIG
+
+        source: Optional[str] = None
+        if path:
+            source = path if os.path.exists(path) else None
+        elif os.path.exists(target):
+            source = target
+        elif os.path.exists(LEGACY_CONFIG):
+            source = LEGACY_CONFIG
+
+        if source is None:
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data: Dict[str, Any] = json.load(f)
-                known = {f.name for f in fields(cls)}
-                for k, v in data.items():
-                    if k in known:                 # 忽略改名/删除后残留的旧键
-                        setattr(cfg, k, v)
-                if _migrate(cfg, data.get("config_version", 1)):
-                    try:
-                        cfg.save(path)
-                        print("[config] 已把形象升级为新版默认值（旧配置已迁移）")
-                    except Exception as e:
-                        print(f"[config] 迁移后保存失败：{e}")
+                cfg.save(target)
+                log.info("已生成默认配置 %s", target)
             except Exception as e:
-                print(f"[config] 读取失败，用默认值：{e}")
-        else:
+                log.error("生成配置失败，用默认值：%s", e)
+            return cfg
+
+        data: Dict[str, Any] = {}
+        try:
+            data = cls._read(source)
+            known = {f.name for f in fields(cls)}
+            for k, v in data.items():
+                if k in known:                 # 忽略改名/删除后残留的旧键
+                    setattr(cfg, k, v)
+        except Exception as e:
+            log.warning("读取 %s 失败，用默认值：%s", os.path.basename(source), e)
+
+        # 形象升级迁移：老配置文件里 sprite 写死的是上一代立绘，
+        # 不迁的话改了默认值也看不见效果。只动"仍是旧默认值"的字段。
+        # 没有 config_version 字段 = 这份配置比"版本号"这个概念还老，按 1 算。
+        if _migrate(cfg, data.get("config_version", 1)):
             try:
-                cfg.save(path)
-                print(f"[config] 已生成默认配置 {path}")
+                cfg.save(target)
+                log.info("已把形象升级为新版默认值")
             except Exception as e:
-                print(f"[config] 生成配置失败：{e}")
+                log.warning("迁移后保存失败：%s", e)
+
+        # 旧 JSON 自动迁移。只在"没指定路径、且新文件还不存在"时做，
+        # 免得把用户显式指定的路径也复制一份出来。
+        if source == LEGACY_CONFIG and not os.path.exists(target):
+            try:
+                cfg.save(target)
+                log.info("已把旧配置迁移到 %s", os.path.basename(target))
+            except Exception as e:
+                log.warning("迁移配置失败（不影响运行）：%s", e)
+
         return cfg
 
     def override(self, **kw: Any) -> "Config":

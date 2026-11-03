@@ -51,8 +51,13 @@ Apache-2.0 全文：https://www.apache.org/licenses/LICENSE-2.0
 
 ## 3. Python 依赖
 
-运行依赖（`requirements.txt` 里的 PyQt6、MediaPipe、OpenCV、NumPy、pywin32 等）**不在本仓库内**，
-由 `setup.bat` 首次运行时通过 pip 安装。它们各自的许可随包分发，与本项目的 MIT 无关。
-其中 **PyQt6 是 GPL-3.0 / 商业双许可**——如果你要把本项目**闭源分发**，
-PyQt6 这一条需要单独处理（换成 PySide6 走 LGPL，或购买 Riverbank 的商业许可）。
-源码公开、自己用、内部用都不受影响。
+运行依赖（`requirements.txt` 里的 **PySide6**、MediaPipe、OpenCV、NumPy、PyYAML、pywin32 等）
+**不在本仓库内**，由 `setup.bat` 首次运行时通过 pip 安装。它们各自的许可随包分发，
+与本项目的 MIT 无关。
+
+界面层用的是 **PySide6（LGPL-3.0）**，不是 PyQt6（GPL / 商业双许可）——
+这是刻意选的：LGPL 允许**闭源分发**，只要保留声明、并且允许用户替换 Qt 库本身。
+源码公开、自己用、内部用、闭源发布都不受影响。
+
+> 如果你后来把界面层换回 PyQt6，闭源分发就需要单独处理许可
+> （开源、或购买 Riverbank 的商业授权）。

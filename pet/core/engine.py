@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 
 import gestures
 from gestures import (
+    ContinuousMapper,
     Debouncer,
     GestureSmoother,
     MotionGate,
@@ -82,8 +83,20 @@ class GestureEngine:
         self.deb_pair = Debouncer(cfg.pair_hold, cfg.pair_cooldown, grace=cfg.grace)
         self.pair_smoother = GestureSmoother(window=5, need=3)
 
+        # 双手张开上下移动 = 网页/文档滚动。
+        # 用**相对变化**而不是绝对位置：手往前伸一点、摄像头换个角度，绝对坐标
+        # 就漂了；相对变化天然免疫这种漂移，还自带平滑。
+        self.scroll_map = ContinuousMapper(gain=26.0, max_step=3.0,
+                                           deadzone=0.004)
+
         self.enabled = True
         self._last_toggle = -1e9
+
+        # 游戏模式的手势拦截器。返回 True = "这一下被游戏吃掉了"，
+        # 不再走正常映射——否则玩石头剪刀布时比个 ✊，既出了石头又让它睡觉。
+        # 用回调而不是让引擎直接持有 RPSGame：core 不该反过来依赖玩法层，
+        # headless 模式和单元测试也就不必拖上游戏代码。
+        self._game_hook = None
         self._pinch_since: Optional[float] = None   # 双手捏合开始计时点
 
     # ---------------------------------------------------------------- 开关
@@ -99,6 +112,7 @@ class GestureEngine:
         self.smoother.reset()
         self.deb_pair.reset()
         self.pair_smoother.reset()
+        self.scroll_map.reset()
         self._pinch_since = None
         if self.gate is not None:
             self.gate.reset()
@@ -151,7 +165,20 @@ class GestureEngine:
             self.pair_smoother.reset()
             if self.gate is not None:
                 self.gate.reset()
+
+        # 游戏模式：确认过的手势先给游戏过一遍，没被吃掉的才当正常意图。
+        # 放在最后统一处理，而不是塞进 _single/_double 里——那两处各有分支，
+        # 漏一条就会出现"玩着游戏还在切窗口"。
+        if self._game_hook is not None and out.fired:
+            out.fired = [f for f in out.fired
+                         if not self._game_hook(f.gesture, now)]
+
         return out
+
+    # ---------------------------------------------------------------- 游戏模式
+    def set_game_hook(self, hook) -> None:
+        """挂上/摘掉手势拦截器。传 None = 退出游戏，手势恢复正常含义。"""
+        self._game_hook = hook
 
     # ---------------------------------------------------------------- 单手：窗口
     def _single(self, st: TwoHandState, out: EngineOut, now: float) -> None:
@@ -193,6 +220,23 @@ class GestureEngine:
             self.pair_smoother.reset()
             out.pair = None
             return
+
+        # ---- 双手张开并上下移动 = 网页 / 文档滚动 ----
+        # 张开**不动**仍然归"播放/暂停"（走下面的配对逻辑），只有真的产生位移
+        # 才转成滚动。不加这个区分的话，想滚一下页面，音乐会被顺手停掉。
+        if l_g == "OPEN_PALM" and r_g == "OPEN_PALM" \
+                and st.left is not None and st.right is not None:
+            mid_y = float((st.left.center[1] + st.right.center[1]) / 2)
+            step = self.scroll_map.update(mid_y)
+            if abs(step) > 0.08:
+                out.continuous.append(("scroll", float(step)))
+                # 移动中不判配对，否则"边滚边触发播放/暂停"
+                self.deb_pair.update(None, now)
+                self.pair_smoother.reset()
+                out.pair = None
+                return
+        else:
+            self.scroll_map.reset()
 
         # 只认"两只手同一个手势"：左右不一致就当作没有意图。
         # 这是刻意的取舍 —— 一只手路过画面时不该改变正在播放的音乐。

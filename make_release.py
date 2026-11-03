@@ -31,13 +31,19 @@ INCLUDES = [
     "models/gesture_recognizer.task",
     "models/blaze_face_short_range.tflite",
     "models/blaze_face_full_range.tflite",
+    "models/face_landmarker.task",
     "tests/test_gestures.py",
     "tests/test_pet_core.py",
+    "tests/test_pet_states.py",
+    "tests/test_rps.py",
+    "tests/test_bond.py",
+    "tests/test_emotion.py",
 ]
 
 # 整个目录一起打包（桌宠那一层文件多，逐个列容易漏）
 #   pet/    含 assets/girl/ 的七帧立绘，漏了桌宠就没形象了
-#   tools/  prep_sprites.py —— 别人想换自己的图时要用，属于"可复现"的一部分
+#   tools/  prep_sprites.py / make_docs_images.py —— 别人想换自己的图、
+#           或者想重出文档配图时要用，属于"可复现"的一部分
 DIR_INCLUDES = ["pet", "tools"]
 
 SKIP_DIRS = {".venv", "__pycache__", ".workbuddy", "dist", "build", "calibration", ".git"}

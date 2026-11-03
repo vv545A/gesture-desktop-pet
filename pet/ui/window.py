@@ -18,26 +18,30 @@ Windows 上做"桌宠"的几个关键点，都在这一个文件里解决：
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import random
 import sys
 import time
 from typing import Optional
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QCursor, QColor, QGuiApplication, QPainter,
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import (QCursor, QColor, QGuiApplication, QPainter,
                          QPen, QPolygonF)
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget
 
 from ..core import windowinfo
 from ..core.bus import EventBus
 from ..core.config import Config
-from ..core.events import (ActionDone, ContinuousAction, ControlToggled, Event,
-                           HandsSeen, PerceptionFailed, PerceptionReady, PetSay)
+from ..core.events import (ActionDone, ContinuousAction, ControlToggled,
+                           EmotionChanged, Event, HandsSeen, PerceptionFailed,
+                           PerceptionReady, PetGame, PetSay, PresenceChanged)
 from . import anim
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
+
+log = logging.getLogger(__name__)
 
 # ---- Win32 常量（只在 Windows 上有意义） ----
 GWL_EXSTYLE = -20
@@ -56,13 +60,19 @@ _IDLE_MOODS = ("idle", "listen", "calm", "sleepy", "sit")
 
 
 class PetWindow(QWidget):
-    def __init__(self, bus: EventBus, cfg: Config, control=None) -> None:
+    def __init__(self, bus: EventBus, cfg: Config, control=None,
+                 bond=None) -> None:
         super().__init__()
         self.cfg = cfg
         self.bus = bus
         # ControlCenter：关手势识别、退出程序这类"要动全局状态"的事都通过它
         # 走，窗口自己不改引擎/摄像头的状态（见 core/control.py 的注释）
         self.control = control
+
+        # 亲密度存档，可以为 None（headless / 单元测试 / 目录不可写）
+        self.bond = bond
+        self._bond_dirty = False
+        self._bond_saved = 0.0
         self._enabled = bool(getattr(control, "enabled", True))
         self.scale = max(0.6, min(2.0, cfg.pet_scale))
         # 有立绘就用立绘，没有就退回程序化矢量版（两套共用同一套姿态参数）
@@ -151,6 +161,28 @@ class PetWindow(QWidget):
         self._no_sit_until = 0.0           # 刚站起来那几秒先别再坐下去
         self._pats = []                    # 最近几下"摸"的时刻，用来升级成生气
 
+        # ---- 手势驱动的持久状态（宠物互动线）----
+        # 与 mood 的区别：mood 是"表情"，几秒后自己退回 idle；
+        # 这几个是"状态"，必须另一个手势或一次点击才解除。
+        # 混在一起的后果很直观：比个 ✊ 让它睡，两秒后它自己醒了——那就不叫睡觉。
+        self._asleep = False               # ✊ 之后的硬锁
+        self._napping = False              # 人不在，自动打盹（和 _asleep 是两回事）
+        self._dance_until = 0.0            # ✌️ 跳舞的结束时刻（限时，不是永动）
+        self._follow_backup = ""           # 切到跟鼠标前的模式，醒来时还原
+        self._game_on = False              # 正在玩石头剪刀布（游戏时不回角落）
+
+        # ---- 隔空撸宠 ----
+        self._pet_since = 0.0              # 从什么时候开始"被摸"（0 = 当前没在摸）
+        self._petting = False
+        self._pet_said = False             # 这一轮摸够了有没有说过话
+
+        # ---- 用户情绪（来自面部表情）----
+        # 这是"用户的状态"，不是宠物的表情。宠物的反应由下面几个冷却控制，
+        # 免得用户皱着眉头工作半小时，被关怀三十遍。
+        self._user_mood = "neutral"
+        self._care_until = 0.0             # 关怀台词的冷却
+        self._cheer_until = 0.0            # 跟着高兴的冷却
+
         # ---- 气泡 ----
         self._bubble = ""
         self._bubble_t0 = 0.0
@@ -218,7 +250,7 @@ class PetWindow(QWidget):
                 style &= ~WS_EX_TRANSPARENT
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
         except Exception as e:
-            print(f"[pet] 设置穿透失败：{e}")
+            log.warning("设置穿透失败：%s", e)
 
     def _screen_rect(self) -> QRectF:
         scr = QGuiApplication.primaryScreen()
@@ -263,6 +295,9 @@ class PetWindow(QWidget):
         self.bus.subscribe(ContinuousAction, self._on_continuous)
         self.bus.subscribe(ControlToggled, self._on_toggle)
         self.bus.subscribe(PetSay, self._on_say)
+        self.bus.subscribe(PetGame, self._on_game)
+        self.bus.subscribe(PresenceChanged, self._on_presence)
+        self.bus.subscribe(EmotionChanged, self._on_emotion)
         self.bus.subscribe(PerceptionReady, self._on_ready)
         self.bus.subscribe(PerceptionFailed, self._on_failed)
 
@@ -273,9 +308,15 @@ class PetWindow(QWidget):
         seen = bool(ev.count and ev.point)
 
         if seen:
+            # 手都举起来了，人肯定在——打盹立刻结束，不用等下一次人脸检测
+            self._napping = False
             self._last_hand = now
             self._hand_pt = ev.point
-            self._follow_hand(ev.point)
+            # 睡着时不跟手：手在画面里晃来晃去不该把睡着的宠物拖着走。
+            # 但仍然记录手的位置和时间，醒来时能立刻接上。
+            if not self._asleep:
+                self._follow_hand(ev.point)
+            self._update_petting(now, ev)
             # 手在画面里移动 -> 视线跟着手，是最便宜也最有效的"活着"信号
             self._look = (_clamp((ev.point[0] - 0.5) * 2.2, -1.0, 1.0),
                           _clamp((ev.point[1] - 0.5) * 2.0, -1.0, 1.0))
@@ -293,6 +334,7 @@ class PetWindow(QWidget):
             # 不打哈欠、戳了也不动"。这是这套动作系统最大的一次坑。
             if self._hand_seen:
                 self._yawned = False
+            self._update_petting(now, None)
         self._hand_seen = seen
 
         # 悬停进度环：这 0.5 秒的等待画在宠物身上，比画在屏幕角落直观得多
@@ -353,11 +395,15 @@ class PetWindow(QWidget):
         now = time.monotonic()
         self._touch(now)
         self._stand_up(now)
+
         if ev.ok:
             # 成功 -> 蹦一下。动作反馈要"有重量"，不能只是文字变一下
             self._anim.play("hop", now)
             if ev.bubble:
                 self.say(ev.bubble, ev.mood)
+            # 宠物互动手势还要迁移状态（睡 / 醒 / 跟随 / 跳舞）
+            self._apply_pet_intent(ev.intent)
+            self._bond_add("gesture")
         else:
             # 失败 -> 摇头 + 生气，而且**把原因说出来**。
             # 以前只 print 到控制台，打包成无控制台程序之后用户根本看不到，
@@ -365,7 +411,51 @@ class PetWindow(QWidget):
             self._anim.play("shake", now)
             self.say(ev.detail or "这一步没做成…", "angry")
             if ev.detail:
-                print(f"[action] {ev.label} 失败：{ev.detail}")
+                log.warning("动作 %s 失败：%s", ev.label, ev.detail)
+
+        # 说完话抖一下：姿态层也压一下，两套反馈叠在一起才够"重"
+        self._pose.squash = 0.22 if ev.ok else -0.20
+        self._pose.bob = 0.10
+
+    def _apply_pet_intent(self, key: str) -> None:
+        """
+        宠物互动手势的**状态迁移**。
+
+        为什么单独抽一层而不是在 _on_action 里堆 if：
+            这几个动作里三个是"改变状态"（睡 / 醒 / 换跟随方式），
+            只有一个（跳舞）是"放一段动画"。混着写的话，以后每加一个
+            状态手势都要动一遍原有分支，"睡醒"和"跟随"的先后顺序很容易搞乱。
+        """
+        now = time.monotonic()
+
+        if key == "pet:sleep":
+            self._asleep = True
+            self._dance_until = 0.0
+            self._set_mood("sleepy", hold=1e9)   # 由状态负责解除，不靠超时
+        elif key == "pet:wake":
+            self._asleep = False
+            self._set_mood("happy", hold=1.6)
+            self._stand_up(now)                  # 可能是坐着睡的，先起来
+            self._anim.play("wave", now)
+            if self._follow_backup:
+                # 醒来时还原睡前那套跟随方式，别把用户的选择弄丢
+                self.cfg.follow = self._follow_backup
+                self._follow_backup = ""
+        elif key == "pet:follow":
+            if self.cfg.follow == "cursor":
+                # 再比一次 ☝️ = 退出跟随，回到原来的方式
+                self.cfg.follow = self._follow_backup or "hand"
+                self._follow_backup = ""
+            else:
+                self._follow_backup = self.cfg.follow
+                self.cfg.follow = "cursor"
+        elif key == "pet:dance":
+            self._asleep = False
+            self._dance_until = now + 3.5
+            # 立刻切表情，不等下一帧：_tick 里那条只是"续命"，防止
+            # say() 的 1.6 秒超时把后两秒掐成"站着抖"
+            self._set_mood("dance", 3.5)
+            self._anim.play("hop", now)
 
     def _on_continuous(self, ev: Event) -> None:
         assert isinstance(ev, ContinuousAction)
@@ -393,13 +483,94 @@ class PetWindow(QWidget):
         if ev.anim:
             self._anim.play(ev.anim, time.monotonic())
 
+    def _on_game(self, ev: Event) -> None:
+        """
+        石头剪刀布的**显示**。这里一个 if 都不涉及规则。
+
+        谁赢谁输、几比几，都是感知线程算好传过来的。分开的好处很实际：
+        想改成五局三胜只动 `rps.py`，想改说法只动这里，两边互不牵扯。
+        """
+        assert isinstance(ev, PetGame)
+        self._game_on = bool(ev.active)
+
+        if not ev.active:
+            # 刚退出游戏：把"倒数/惊讶"这类临时表情收回来
+            if self._mood in ("listen", "surprised"):
+                self._set_mood("happy", 1.2)
+            return
+
+        if ev.phase == "countdown":
+            # 倒数用短气泡：一秒一个数字，长句子会被气泡宽度切掉
+            self.say(str(ev.count) if ev.count else "…", "listen")
+        elif ev.phase == "armed":
+            self.say("出！", "surprised")
+        elif ev.phase == "result" and ev.result >= 0:
+            score = f"{ev.score[0]}:{ev.score[1]}"
+            if ev.result == 0:
+                self.say(f"{ev.player} vs {ev.pet}，你赢啦　{score}", "shy")
+            elif ev.result == 1:
+                self.say(f"{ev.player} vs {ev.pet}，我赢咯　{score}", "proud")
+            else:
+                self.say(f"都是{ev.player}，平局　{score}", "calm")
+            self._bond_add("game")
+
+    def _on_presence(self, ev: Event) -> None:
+        """
+        人在 / 人走。注意和 `_asleep` 是**两件不同的事**：
+
+        _asleep 是用户比 ✊ 让它睡，必须 ✋ 或点一下才醒，是"听你的"；
+        _napping 是"人不在所以打盹"，人一回来自己就醒，是"懂事"。
+
+        合成一个状态会出问题：用户让它睡下、走开、再回来，宠物会自己醒，
+        和"它听我的"这个预期正好相反。
+        """
+        assert isinstance(ev, PresenceChanged)
+        if ev.present:
+            if self._napping:
+                self._napping = False
+                self.say("你回来啦！", "happy")
+            return
+        if not self._asleep:
+            self._napping = True
+            self._set_mood("sleepy", 1e9)
+
+    def _on_emotion(self, ev: Event) -> None:
+        """
+        用户情绪的**反应策略**。
+
+        三种反应刻意做得不一样：
+            累  -> 什么都不说，只是把动作变轻（安静陪伴）。累了的人不想被搭话。
+            皱眉-> 说一句关心的，但有 90 秒冷却，不当复读机。
+            笑  -> 跟着高兴一下，同样有冷却。
+
+        阈值和情绪本身在 `pet/perception/emotion.py`，这里只管"怎么表现"。
+        """
+        assert isinstance(ev, EmotionChanged)
+        self._user_mood = ev.emotion
+        now = time.monotonic()
+
+        if ev.emotion == "tired":
+            # 安静陪伴靠的是"它变轻了"，不是"它说我在陪你"
+            self._set_mood("calm", 1e9)
+        elif ev.emotion == "frown" and now > self._care_until:
+            self._care_until = now + 90.0
+            self.say("要不要歇会儿？", "shy")
+        elif ev.emotion == "happy" and now > self._cheer_until:
+            self._cheer_until = now + 45.0
+            self.say("看你笑我也想笑～", "happy")
+
     def _on_ready(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionReady)
-        self.say("摄像头好啦，把手抬起来试试～", "happy")
+        # 熟了就换个招呼：这是"记得你"最便宜也最有效的表达
+        greet = self.bond.bond.greeting if self.bond is not None else ""
+        if greet and greet != "……":
+            self.say(f"{greet} 摄像头好啦～", "happy")
+        else:
+            self.say("摄像头好啦，把手抬起来试试～", "happy")
 
     def _on_failed(self, ev: Event) -> None:
         assert isinstance(ev, PerceptionFailed)
-        print(f"[pet] {ev.message}")
+        log.info("%s", ev.message)
         self.say(ev.message, "surprised")
 
     # ---------------------------------------------------------------- 对外动作
@@ -433,6 +604,7 @@ class PetWindow(QWidget):
         n = len(self._pats)
         self._touch(now)
         self._stand_up(now)
+        self._bond_add("click")
 
         if n >= max(2, self.cfg.pet_pat_limit):
             self._pats.clear()
@@ -448,28 +620,105 @@ class PetWindow(QWidget):
             self.say("嘿嘿…好痒", "love")
         return n
 
-    # ---------------------------------------------------------------- 跟随
-    def _follow_hand(self, pt: tuple) -> None:
+    def _bond_add(self, kind: str) -> None:
         """
-        手掌位置 -> 屏幕位置。
+        记一次互动。跨过等级门槛时庆祝一下。
+
+        故意把 bond 做成可空的：单元测试和 headless 模式不该为了加个分
+        去准备一个可写目录。没有存档就当作"不记账"，功能照常。
+        """
+        if self.bond is None:
+            return
+        try:
+            leveled_up = self.bond.add(kind)
+            self._bond_dirty = True
+            if leveled_up:
+                self.say(f"我们更熟了——{self.bond.bond.level_name}", "proud")
+        except Exception:
+            pass                        # 记账失败不该影响正在进行的互动
+
+    # ---------------------------------------------------------------- 跟随
+    def _hand_screen_pos(self, pt: tuple) -> QPointF:
+        """
+        掌心的归一化坐标 -> 屏幕坐标。
+
+        抽出来是因为有两个用途：跟手时决定窗口往哪走、撸宠时判断"手够不够近"。
+        两处必须用**同一套映射**，否则会出现"看着摸到了但系统不认"。
 
         gain > 1 是刻意的：摄像头视野里挪 10cm，屏幕上只走 10% 宽度会显得很迟钝；
-        放大 1.6 倍之后，小幅移动就能让宠物跑到屏幕另一头，"隔空驱赶"的感觉才出来。
+        放大 1.6 倍之后小幅移动就能跨半个屏幕，"隔空驱赶"的感觉才出来。
         """
+        r = self._screen_rect()
+        gain = self.cfg.follow_gain
+        gx = 0.5 + (pt[0] - 0.5) * gain
+        gy = 0.5 + (pt[1] - 0.5) * gain
+        return QPointF(r.left() + _clamp(gx, 0.02, 0.98) * r.width(),
+                       r.top() + _clamp(gy, 0.08, 0.94) * r.height())
+
+    def _follow_hand(self, pt: tuple) -> None:
+        """把手掌位置变成窗口位置（只在 follow == "hand" 时生效）。"""
         if self.cfg.follow != "hand":
             return
         now = time.monotonic()
         if now < self._park_until:      # 刚被用户拖过，别抢
             return
         r = self._screen_rect()
-        gain = self.cfg.follow_gain
-        gx = 0.5 + (pt[0] - 0.5) * gain
-        gy = 0.5 + (pt[1] - 0.5) * gain
-        x = r.left() + _clamp(gx, 0.02, 0.98) * r.width() - self.win_w / 2
-        y = r.top() + _clamp(gy, 0.08, 0.94) * r.height() - self.win_h * 0.55
+        p = self._hand_screen_pos(pt)
+        x = p.x() - self.win_w / 2
+        y = p.y() - self.win_h * 0.55
         x = _clamp(x, r.left(), r.right() - self.win_w)
         y = _clamp(y, r.top(), r.bottom() - self.win_h)
         self._target = QPointF(x, y)
+
+    def _update_petting(self, now: float, ev) -> None:
+        """
+        隔空撸宠：判断"手是不是在摸它"。
+
+        为什么不用"手掌坐标离宠物多远"当判据：
+            宠物本来就跟着手走，手到哪它到哪——距离永远很近，这个条件恒真，
+            等于没判据。真正有信息量的是**两件事同时成立**：
+              1. 手在屏幕上真的落在它身上（距离够近）；
+              2. 手还在缓慢移动（速度低于 pet_speed）。
+            手压在身上、又轻轻动，主观感受就是"在它身上摸"。
+
+        （2026-11 修）默认跟随方式改成 corner 之后，第 1 条必须用**屏幕距离**：
+            它守在角落不动，如果还按"宠物有没有追上手"判断，那个条件会恒为真，
+            手在屏幕另一头慢慢晃也会被算成在摸它。
+        """
+        if ev is None or not ev.count:
+            self._pet_since = 0.0
+            self._petting = False
+            self._pet_said = False
+            return
+
+        hand = self._hand_screen_pos(ev.point)
+        body = QPointF(self._pos.x() + self.pet_cx,
+                       self._pos.y() + self.pet_cy)
+        # 曼哈顿距离比欧氏宽松一点：手不必精确压在它身上，落在身边就算
+        reach = max(self.body_w, self.body_h) * 0.75
+        near = (hand - body).manhattanLength() < reach
+        gentle = ev.speed < self.cfg.pet_speed
+
+        if self._asleep or not (near and gentle):
+            self._pet_since = 0.0
+            self._petting = False
+            self._pet_said = False
+            return
+
+        if self._pet_since <= 0.0:
+            self._pet_since = now
+
+        if not self._petting and now - self._pet_since > self.cfg.pet_delay:
+            self._petting = True
+            self._pose.squash = 0.14          # 被摸到的那一下"弹"一下
+            self.say("唔…", "shy")
+
+        # 摸够久主动说一句：一直干摸没有任何反馈，会让人以为功能没生效
+        if self._petting and not self._pet_said and now - self._pet_since > 3.5:
+            self._pet_said = True
+            self.say("嘿嘿…好舒服", "shy")
+            # 摸着摸着加分（权重比手势高：这是"花时间陪着"，不是"下指令"）
+            self._bond_add("pet")
 
     def _cursor_on_pet(self, c: Optional[QPoint] = None) -> bool:
         """指针是不是正压在宠物身上（身体矩形 + 一圈余量）。"""
@@ -611,6 +860,14 @@ class PetWindow(QWidget):
         self._last_tick = now
         self._phase = now
 
+        # 亲密度定期落盘：30 秒一次。每次互动都写磁盘太重，
+        # 只在内存里累加、退出时再补一次，掉电最多丢半分钟。
+        if self._bond_dirty and now - self._bond_saved > 30.0:
+            self._bond_saved = now
+            self._bond_dirty = False
+            if self.bond is not None:
+                self.bond.save()
+
         # 1) 一段时间没人理 -> 困、打哈欠、坐下、伸懒腰。
         #    "没人的时候别赖在屏幕中间"是桌宠的基本礼貌。
         #    吸附/跟鼠标两种模式下不回家：一个要守在操作目标旁边，
@@ -631,7 +888,21 @@ class PetWindow(QWidget):
         # （16ms）被按回 sleepy，动作片段又被跟着来的哈欠顶掉 ——
         # 表现就是"怎么戳都像没反应、保存也不点头、拖动没变化"。
         idle_mood = self._mood in _IDLE_MOODS
-        if quiet > self.cfg.idle_after and idle_mood:
+
+        if self._asleep:
+            # ✊ 睡着的优先级高于以下全部：它睡在哪儿就是哪儿。
+            # 不特判的话，"没手"逻辑会在两秒内把它叫醒并赶回角落——
+            # 用户明明刚让它睡下，看着就像手势没生效。
+            if self._mood != "sleepy":
+                self._set_mood("sleepy", 1e9)
+        elif self._napping:
+            # 人不在：打盹，并且飘回角落——等他回来一眼就看见它在睡觉
+            if self._mood != "sleepy":
+                self._set_mood("sleepy", 1e9)
+            if (self.cfg.follow not in ("window", "cursor") and not self._dragging
+                    and not self._ui_open() and now > self._park_until):
+                self._place_home(immediate=False)
+        elif quiet > self.cfg.idle_after and idle_mood and not self._game_on:
             # 犯困：打一个哈欠，并把表情切到"打瞌睡"。
             # 放在 idle_after*2（默认 10 秒）：5 秒只是"回角落待命"，
             # 10 秒才真的困。只打一次 —— 每帧都重播等于永远停在第 0 帧
@@ -665,9 +936,11 @@ class PetWindow(QWidget):
                     and not self._ui_open() and now > self._park_until):
                 self._place_home(immediate=False)
 
-        if self.cfg.follow == "window":
-            self._follow_window(now)
-        self._follow_cursor(dt)
+        # 睡着时不跟手也不跟鼠标：睡眠的语义就是"别动"
+        if not self._asleep:
+            if self.cfg.follow == "window":
+                self._follow_window(now)
+            self._follow_cursor(dt)
         self._update_cursor_through(dt)
 
         # 2) 平滑移动：指数趋近，和帧率无关（掉帧只会变慢，不会瞬移）
@@ -698,7 +971,19 @@ class PetWindow(QWidget):
         # 3) 情绪超时后退回 idle。
         #    "sit" 不在其中：坐下是一种**持续状态**，只有看到手/被点/有动作
         #    才会站起来（见 _wake_up / pet_me）。否则坐两秒又站起来，很怪。
-        if now > self._mood_until and self._mood not in ("idle", "sleepy", "sit"):
+        #
+        #    跳舞是例外：它由 _dance_until 统管，不能被 say() 那 1.6 秒的
+        #    mood 超时提前掐断，否则后两秒会变成"站着抖"。
+        if now < self._dance_until and not self._asleep:
+            self._set_mood("dance", self._dance_until - now)
+        elif self._petting and not self._asleep:
+            # 被摸时表情锁在 shy。不每帧续上的话，shy 那 0.6 秒一过
+            # 就被下面的超时逻辑拉回 idle——摸到一半突然不脸红了，很出戏。
+            self._set_mood("shy", 0.6)
+        elif self._user_mood == "tired" and not (self._asleep or self._napping):
+            # 安静陪伴：他累了就安静待着，别用活泼的表情去打扰
+            self._set_mood("calm", 1e9)
+        elif now > self._mood_until and self._mood not in ("idle", "sleepy", "sit"):
             self._set_mood("idle", 0.5)
 
         # 3b) 面板跟着宠物走：跟手模式下宠物会一直移动，面板要是钉在原地，
@@ -716,6 +1001,28 @@ class PetWindow(QWidget):
         # 硬翻面自然（正面立绘翻面是看不出来的，只会让尾巴跑到另一边）。
         if self._facing and self.cfg.sprite_walk:
             target.tilt += self._facing * 4.0
+
+        # 4b) 跳舞：在时间轴上叠一层高频摆动。
+        #     姿态表只给"基调"——静态的 dance 姿态看着只是"摆了个造型"，
+        #     必须有相位变化才叫跳舞。最后 0.6 秒幅度收敛，避免戛然而止。
+        if now < self._dance_until:
+            amp = min(1.0, (self._dance_until - now) / 0.6)
+            target.tilt += 8.0 * amp * math.sin(now * 9.0)
+            target.bob += 0.06 * amp * abs(math.sin(now * 5.2))
+            target.squash += 0.07 * amp * math.sin(now * 6.4)
+
+        # 4c) 被摸：尾摆加快。比"说句话"更让人上瘾的是"它真的在动"，
+        #     所以撸宠的反馈主要落在尾巴上，台词只做点缀。
+        if self._petting:
+            target.wag += 0.50 * math.sin(now * 7.5)
+
+        # 4d) 用户累了：所有微动幅度压到四成。
+        #     "安静陪伴"落到像素上就是——存在感变低，但不是消失。
+        #     直接停掉呼吸会像一张贴图卡住了，那比不陪伴更糟。
+        if self._user_mood == "tired":
+            target.bob *= 0.4
+            target.squash *= 0.4
+            target.wag *= 0.4
 
         # 5) 进度环 / 柔光：目标值来自事件，这里追上去，避免一帧闪
         self._aura += (self._aura_target - self._aura) * _clamp(dt * 10, 0, 1)
@@ -1024,8 +1331,15 @@ class PetWindow(QWidget):
             if target == "btn":
                 self._on_power_click()
             elif target == "body":
-                self.pet_me()
-                self.open_panel()
+                if self._asleep:
+                    # 睡着时点一下 = 摸醒。
+                    # 摄像头关掉之后这是唯一的唤醒途径，否则它就一直睡着，
+                    # 只能去托盘退出重开——那也太笨了。
+                    self._asleep = False
+                    self.say("唔…我醒了", "happy")
+                else:
+                    self.pet_me()
+                    self.open_panel()
         else:
             # 用户刚把它摆好，10 秒内别自己跑走（否则"我放这儿"的意图被无视）
             self._park_until = time.monotonic() + 10.0

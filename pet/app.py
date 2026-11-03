@@ -25,8 +25,10 @@ import sys
 import threading
 import time
 
+from .core import logging_setup
+from .core.bond import BondTracker
 from .core.bus import EventBus
-from .core.config import DEFAULT_CONFIG, Config
+from .core.config import BOND_FILE, Config
 from .core.control import ControlCenter
 from .core.engine import GestureEngine
 from .core.events import (ActionDone, ControlToggled, GestureFired,
@@ -38,7 +40,7 @@ from .intent.router import IntentRouter
 # ------------------------------------------------------------------ 命令行
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="pet", description="隔空手势桌宠（gesture desktop pet）")
-    p.add_argument("--config", default=None, help="配置文件路径（默认 pet_config.json）")
+    p.add_argument("--config", default=None, help="配置文件路径（默认 gestures.yaml）")
     p.add_argument("--cam", type=int, default=None, help="摄像头序号")
     p.add_argument("--scale", dest="pet_scale", type=float, default=None, help="桌宠大小倍数")
     p.add_argument("--follow", choices=["hand", "cursor", "window", "corner"],
@@ -75,8 +77,8 @@ def _snapshot_actions(cfg: Config, path: str) -> int:
     才能判断"这像不像跳"。改完关键帧跑一条命令，一眼看全套。
     """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtGui import QColor, QPainter, QPixmap
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication
 
     from .ui import anim
     from .ui.paint import PetPose, draw_shadow, ui_font
@@ -150,8 +152,8 @@ def _snapshot(cfg: Config, path: str) -> int:
     跑一条命令就能看到结果，不用举着手对着屏幕反复试。
     """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtGui import QColor, QPainter, QPixmap
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication
 
     from .ui.paint import PetPose, draw_aura, draw_glow, draw_shadow, draw_pet, ui_font
     from .ui.sprite import SpriteSet
@@ -213,7 +215,9 @@ class DemoSource(threading.Thread):
     ③ 给朋友演示时不怕现场光线/摄像头出问题。
     """
 
-    GESTURES = ["OPEN_PALM", "VICTORY", "POINT", "FIST", "THUMB_UP", "THUMB_DOWN"]
+    # 顺序按"宠物互动主线"排：醒 -> 跳舞 -> 跟随 -> 睡觉 -> 撸一下，
+    # 每 4.5 秒换一个，一轮 27 秒正好把 MVP 的五个手势过完一遍。
+    GESTURES = ["OPEN_PALM", "VICTORY", "POINT", "FIST", "PINCH", "THUMB_UP"]
 
     def __init__(self, bus: EventBus) -> None:
         super().__init__(daemon=True, name="demo")
@@ -235,8 +239,9 @@ class DemoSource(threading.Thread):
             phase = t % 4.5
             idx = int(t // 4.5)
             g = self.GESTURES[idx % len(self.GESTURES)]
-            # 每四轮来一次"双手"：这样不开摄像头也能看到双手=音乐那条链路
-            two_hand = (idx % 4 == 3)
+            # 每 6 步安排一次双手（落在 THUMB_UP 上），不开摄像头也能看到
+            # "双手 = 音乐"那条链路；其余全都是单手宠物互动。
+            two_hand = (idx % 6 == 5)
             side = "both" if two_hand else "right"
             progress = min(1.0, max(0.0, (phase - 1.2) / 1.6))
             gesture = None if (two_hand or progress <= 0) else g
@@ -295,8 +300,8 @@ def _headless(cfg: Config, bus: EventBus, engine: GestureEngine,
 # ------------------------------------------------------------------ 图形界面
 def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
          router: IntentRouter, demo: bool) -> int:
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QApplication
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
 
     from .perception.worker import PerceptionWorker
     from .ui.tray import PetTray
@@ -309,7 +314,7 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
     # 所有"开关"的唯一入口：桌宠右上角的 ×、面板、托盘、双手捏合都走它
     control = ControlCenter(bus, engine, cfg)
 
-    window = PetWindow(bus, cfg, control)
+    window = PetWindow(bus, cfg, control, bond=BondTracker.load(BOND_FILE))
     window.start()
 
     worker = None if demo else PerceptionWorker(cfg, bus, router, engine, control)
@@ -320,6 +325,9 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
             worker.stop()
         if demo_src is not None:
             demo_src.stop()
+        # 退出前补一次存档：正常退出不该丢掉最后那段互动
+        if window.bond is not None:
+            window.bond.save()
         app.quit()
 
     control.attach_worker(worker)
@@ -357,7 +365,14 @@ def _gui(cfg: Config, bus: EventBus, engine: GestureEngine,
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    cfg = Config.load(args.config or DEFAULT_CONFIG)
+    # 日志要在最前面配好：后面每一步（读配置、装模型、开摄像头）都可能出问题，
+    # 晚配一步，那些失败就只能靠 traceback 硬看了。
+    logging_setup.setup(verbose=args.verbose)
+
+    # 传 None 而不是 DEFAULT_CONFIG：让 Config.load 自己按
+    # gestures.yaml -> pet_config.json -> 新建 的顺序找。
+    # 这里如果传死路径，旧配置的自动迁移分支就永远走不到了。
+    cfg = Config.load(args.config)
     cfg.override(cam=args.cam, pet_scale=args.pet_scale, hold=args.hold,
                  follow=args.follow, follow_gain=args.follow_gain,
                  home_corner=args.home_corner, click_through=args.click_through,
@@ -368,6 +383,15 @@ def main(argv=None) -> int:
     # 用户在"手势对照表"页面里改过的绑定，必须赶在任何一次 resolve 之前装上 ——
     # 否则第一下手势用的还是默认表，看起来就像"改了没生效"。
     mapping.apply_bindings(cfg.bindings)
+
+    # 配置里的 👍 页面（配成带 ?q= 的地址就是"隔空搜索"）。
+    # actions 是懒加载的（非 Windows 也能 import，只是动作用不了），
+    # 这里失败也不该拦住启动。
+    try:
+        import actions as _actions
+        _actions.set_browser_url(cfg.browser_url)
+    except Exception:
+        pass
 
     if args.list_intents:
         print(mapping.describe_table())

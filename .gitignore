@@ -10,11 +10,18 @@ venv/
 # 发布包
 dist/
 
+# 临时工作区（冒烟脚本、截图、手动下载的轮子）
+build/
+
 # 本机采集的手势数据（calibrate.py 生成）
 calibration/
 
 # 本机配置：摄像头序号、跟随增益因人而异，不该覆盖别人的
 pet_config.json
+gestures.yaml
+
+# 亲密度存档：属于"这台电脑上的这段关系"，不该进仓库
+bond.json
 
 # 开发会话记忆（与项目代码无关）
 .workbuddy/
