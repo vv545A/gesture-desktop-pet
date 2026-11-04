@@ -12,6 +12,13 @@
     双手 = 音乐播放（两只手做同一个手势，是有仪式感的"第二层"，
            也和单手彻底分开，不会互相压到）
 
+**单手有三个层次**（2026-11 加）：
+    单击   = 窗口操作（稳住 hold 秒）
+    长按   = 稳住之后**继续不松手**，进入第二层（显示桌面 / 静音 / 开浏览器）
+    挥手   = 张开手掌横向划过去，翻页（唯一能快过鼠标的形态）
+    为什么长按不做"连做两次"：连做两次的第一下已经执行过单击动作，撤不回来；
+    长按是"等够了才进入第二层"，只发生一次，没有副作用。
+
 **单手有两条路，默认是"操作窗口"**：
     单手是高频动作，用户装上手势桌宠的第一诉求几乎都是"替我省几次
     找鼠标的工夫"，所以出厂状态必须是窗口操作。宠物互动（✌️跳舞 /
@@ -163,16 +170,54 @@ _PET_SINGLE: Dict[Tuple[str, str], Intent] = {
 #: 出厂状态：单手 = 操作窗口
 _DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = dict(_WINDOW_SINGLE)
 
+# ------------------------------------------------------------------ 挥手
+# 张开手掌**横向划过去**。方向是手移动的方向（画面已经镜像过，所以和屏幕一致）。
+# 为什么不绑窗口动作：挥手最像"翻一页"，而且翻页是阅读/PPT 演示时最高频的动作。
+# 这条不属于任何预设 —— 用户换了单手整表，翻页仍然该是翻页。
+_SWIPE: Dict[str, Intent] = {
+    "right": Intent("page_down", "下一页", "翻过去～"),
+    "left": Intent("page_up", "上一页", "翻回来～"),
+}
+_DEFAULT_SWIPE: Dict[str, Intent] = dict(_SWIPE)
+
+# ------------------------------------------------------------------ 长按（第二层）
+# 触发之后**继续按住**，进入同一手势的第二层含义。只挂"结果可覆盖"的动作：
+# 显示桌面、静音、开浏览器 —— 就算用户本来只想做单击，多做的那一下也不会
+# 造成不可挽回的后果（这也是为什么这里没有"关闭窗口"）。
+#
+# 为什么长按表跟着预设走：窗口预设里 ✌️ 是"切窗口"，长按变"收起桌面"很自然；
+# 但逗桌宠预设里 ✌️ 是跳舞，用户看宠物跳舞时手举着超过 1.5 秒太正常了，
+# 那时把桌面收掉就是纯误伤。所以两套表各自定义"更深一层"该做什么。
+_LONG_WINDOW: Dict[str, Intent] = {
+    "VICTORY": Intent("win_desktop", "收起所有窗口", "都先让让…", "calm"),
+    "FIST": Intent("mute", "静音", "嘘——安静啦", "calm"),
+    "THUMB_UP": Intent("open_browser", "打开浏览器", "帮你开个网页～", "proud"),
+}
+
+#: 逗桌宠预设的长按：只留一个"跳完了摸摸它"。
+#: 👍 不重复挂浏览器——单击已经开了，长按再开一次用户看不出区别。
+_LONG_PET: Dict[str, Intent] = {
+    "VICTORY": Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
+}
+
+_DEFAULT_LONG: Dict[str, Intent] = dict(_LONG_WINDOW)
+
+#: 运行时生效的长按表（apply_bindings 在副本上改，不污染默认值）
+_LONG: Dict[str, Intent] = dict(_DEFAULT_LONG)
+
 #: 单手预设的显示名。顺序就是对照表页面里按钮的顺序（默认的那个在最前）。
 SINGLE_PRESET_LABEL: Dict[str, str] = {"window": "操作窗口", "pet": "逗桌宠"}
 SINGLE_PRESETS: Tuple[str, ...] = ("window", "pet")
 _PRESET_TABLES = {"window": _WINDOW_SINGLE, "pet": _PET_SINGLE}
+_PRESET_LONG = {"window": _LONG_WINDOW, "pet": _LONG_PET}
 
 # ------------------------------------------------------------------ 双手：音乐
 # 两只手做**同一个**手势才算数（左右不一样就什么也不做，见 engine._double）。
 # 为什么不用"左手 A + 右手 B"的复合键：两只手各做不同手势时识别率明显下降，
 # 而且记不住。同手势 → 一个功能，是唯一能被记住的双手玩法。
 PAIR_HINT = "双手 = 音乐（两手同一个手势）"
+SWIPE_HINT = "挥手 = 张开手掌横向划（不属于任何预设）"
+LONG_HINT = "长按 = 单击之后继续按住约 1 秒（第二层）"
 
 _DEFAULT_PAIR: Dict[str, Intent] = {
     "OPEN_PALM": Intent("play_pause", "播放/暂停", "音乐，走你～"),
@@ -225,12 +270,22 @@ def window_bubble(intent_key: str, result: str) -> str:
     return _WIN_BUBBLE.get((intent_key, result), "")
 
 
-def resolve(side: str, gesture: str) -> Optional[Intent]:
-    """(手, 手势) -> 意图。side 为 "both" 时查双手表。查不到返回 None。"""
+def resolve(side: str, gesture: str, long: bool = False) -> Optional[Intent]:
+    """
+    (手, 手势) -> 意图。side 为 "both" 时查双手表。查不到返回 None。
+
+    long=True 表示"按住不放"的第二层；此时只看手势、不看左右手——
+    长按是一件"更确定"的事，没必要再区分哪只手。
+    挥手不走 (手, 手势) 两维：gesture 直接是 "SWIPE_LEFT"/"SWIPE_RIGHT"。
+    """
+    if gesture.startswith("SWIPE_"):
+        return _SWIPE.get(gesture[len("SWIPE_"):].lower())
     if side == "both":
         return _PAIR.get(gesture)
     if (side, gesture) in _DISABLED:
-        return None                     # 用户明确关掉了这个手势
+        return None                     # 用户明确关掉了这个手势（长按也一起关）
+    if long:
+        return _LONG.get(gesture)
     return _SINGLE.get((side, gesture)) or _SINGLE.get(("right", gesture))
 
 
@@ -245,6 +300,12 @@ def continuous(kind: str) -> Optional[Intent]:
 #     用户可能只改一两条，剩下的应该继续跟着默认表走。以后默认值升级
 #     （比如把 ✋ 从"最大化"改成别的），没改过的条目会自动吃到新默认值，
 #     而不是永远停在用户第一次运行时的快照上。
+
+#: 长按 / 挥手的配置键前缀。这两种没有"哪只手"这一维，独立成前缀，
+#: 免得和 left:/right:/both: 的解析混在一起（apply_bindings 里按前缀分流）。
+LONG_PREFIX = "long:"
+SWIPE_PREFIX = "swipe:"
+
 
 def binding_key(side: str, gesture: str) -> str:
     """(手, 手势) -> 配置里存的那把 key，例如 "right:OPEN_PALM" / "both:FIST"。"""
@@ -269,7 +330,8 @@ _FALLBACK_BUBBLE: Dict[str, str] = {
 
 def _bubble_of(action: str) -> str:
     """同一个动作在默认表里的台词 —— 换绑之后台词也该跟着动作走。"""
-    for table in (_DEFAULT_SINGLE.values(), _PET_SINGLE.values(), _PAIR.values()):
+    for table in (_DEFAULT_SINGLE.values(), _PET_SINGLE.values(), _PAIR.values(),
+                  _DEFAULT_LONG.values(), _LONG_PET.values(), _DEFAULT_SWIPE.values()):
         for it in table:
             if it.key == action:
                 return it.bubble
@@ -292,6 +354,10 @@ def default_bindings() -> Dict[str, str]:
         out[binding_key(side, g)] = it.key
     for g, it in _DEFAULT_PAIR.items():
         out[binding_key("both", g)] = it.key
+    for g, it in _DEFAULT_LONG.items():
+        out[LONG_PREFIX + g] = it.key
+    for direction, it in _DEFAULT_SWIPE.items():
+        out[SWIPE_PREFIX + direction] = it.key
     return out
 
 
@@ -302,6 +368,10 @@ def current_bindings() -> Dict[str, str]:
         out[binding_key(side, g)] = it.key
     for g, it in _PAIR.items():
         out[binding_key("both", g)] = it.key
+    for g, it in _LONG.items():
+        out[LONG_PREFIX + g] = it.key
+    for direction, it in _SWIPE.items():
+        out[SWIPE_PREFIX + direction] = it.key
     return out
 
 
@@ -312,11 +382,20 @@ def current_bindings() -> Dict[str, str]:
 #     预设 = 一次性把整张表换掉，两条路才真的都是"路"，不是"要折腾半天"。
 
 def preset_bindings(name: str) -> Dict[str, str]:
-    """某一套单手预设 -> {binding_key: action}。未知名字返回空字典。"""
+    """
+    某一套单手预设 -> {binding_key: action}。未知名字返回空字典。
+
+    长按表跟着预设一起返回：换"玩法"应该把**整套含义**换掉，
+    而不是留下上一套的长按（见 _LONG_WINDOW / _LONG_PET 的注释）。
+    挥手不属于任何预设，所以不在这个返回值里。
+    """
     table = _PRESET_TABLES.get(name)
     if table is None:
         return {}
-    return {binding_key(side, g): it.key for (side, g), it in table.items()}
+    rows = {binding_key(side, g): it.key for (side, g), it in table.items()}
+    for g, it in _PRESET_LONG.get(name, {}).items():
+        rows[LONG_PREFIX + g] = it.key
+    return rows
 
 
 def current_single_preset() -> str:
@@ -331,7 +410,9 @@ def current_single_preset() -> str:
     best, best_hit = "", -1
     for name in SINGLE_PRESETS:
         rows = preset_bindings(name)
-        hit = sum(1 for k, v in rows.items() if cur.get(k) == v)
+        # 只比左右手的 14 个格子：长按键也在这份返回值里，算进来会虚高命中率
+        hit = sum(1 for k, v in rows.items()
+                  if k.split(":")[0] in ("left", "right") and cur.get(k) == v)
         if hit > best_hit:
             best, best_hit = name, hit
     # 至少命中一半才算"这套预设"，否则就是用户自己配的
@@ -350,13 +431,35 @@ def apply_bindings(overrides: Optional[Dict[str, str]]) -> None:
     _SINGLE.update(_DEFAULT_SINGLE)
     _PAIR.clear()
     _PAIR.update(_DEFAULT_PAIR)
+    _SWIPE.clear()
+    _SWIPE.update(_DEFAULT_SWIPE)
     _DISABLED.clear()
+
+    # 长按的默认值要等左右手表填完才能定（见下面注释），先攒着一起处理
+    long_rows: Dict[str, str] = {}
 
     for key, action in (overrides or {}).items():
         side, _, gesture = str(key).partition(":")
-        if side not in ("left", "right", "both") or not gesture:
+        if not gesture:
             continue
         action = str(action or "")
+
+        # 长按 / 挥手是单维的（没有哪只手），先分流掉，
+        # 否则会被当成 side="long" 的单手键塞进 _SINGLE，永远查不到。
+        if side == LONG_PREFIX.rstrip(":"):
+            long_rows[gesture] = action
+            continue
+        if side == SWIPE_PREFIX.rstrip(":"):
+            if not action:
+                _SWIPE.pop(gesture, None)
+                continue
+            it = _intent_for(action)
+            if it is not None:
+                _SWIPE[gesture] = it
+            continue
+
+        if side not in ("left", "right", "both"):
+            continue
 
         if side == "both":
             if not action:
@@ -375,6 +478,21 @@ def apply_bindings(overrides: Optional[Dict[str, str]]) -> None:
         if it is not None:
             _SINGLE[(side, gesture)] = it
             _DISABLED.discard((side, gesture))
+
+    # ---- 长按：默认值跟着"现在像哪套预设"走 ----
+    # 这一步必须放在左右手全部应用完之后。原因很具体：老用户的配置里
+    # 根本没有 long: 键，如果长按一律落回窗口预设，那么玩着逗桌宠的人
+    # 举着 ✌️ 看跳舞超过 1.5 秒，桌面就被收掉了 —— 这就是误伤。
+    preset = current_single_preset() or "window"
+    _LONG.clear()
+    _LONG.update(_PRESET_LONG.get(preset, _DEFAULT_LONG))
+    for gesture, action in long_rows.items():
+        if not action:
+            _LONG.pop(gesture, None)      # 空串 = 明确关掉这一条长按
+            continue
+        it = _intent_for(action)
+        if it is not None:
+            _LONG[gesture] = it
 
 
 def describe_action(action: str) -> str:
@@ -408,6 +526,16 @@ def describe_table() -> str:
     rows.append(_pad("手势", 16) + _pad("动作", 18) + "桌宠台词")
     for g, it in _PAIR.items():
         rows.append(_pad(g, 16) + _pad(it.label, 18) + it.bubble)
+    rows.append("")
+    rows.append(SWIPE_HINT)
+    for direction, it in _SWIPE.items():
+        rows.append(_pad("往左" if direction == "left" else "往右", 8)
+                    + _pad(it.label, 18) + it.bubble)
+    rows.append("")
+    rows.append(LONG_HINT)
+    for g, it in _LONG.items():
+        rows.append(_pad(GESTURE_LABEL.get(g, g), 16) + _pad(it.label, 18)
+                    + it.bubble)
     rows.append("")
     rows.append("双手同时捏合 保持约 1 秒 = 手势控制开关（紧急停止）")
     return "\n".join(rows)

@@ -130,6 +130,114 @@ for i in range(45):
     t += DT
 check("持续横移 1.5 秒不触发", n == 0, f"({n} 次)")
 
+# ---------------------------------------------------------------- 挥手 / 滚轮 / 长按
+print("== GestureEngine：挥手翻页 ==")
+eng_s = fresh_engine()
+t, got = 0.0, []
+for i in range(12):
+    out = eng_s.update([mkhand(dx=0.022 * i, gesture="OPEN_PALM")], t)
+    got += [f.gesture for f in out.fired]
+    t += DT
+check("张开手掌右划 -> SWIPE_RIGHT", "SWIPE_RIGHT" in got, f"({got})")
+
+eng_sl = fresh_engine()
+t, got = 0.0, []
+for i in range(12):
+    out = eng_sl.update([mkhand(dx=0.242 - 0.022 * i, gesture="OPEN_PALM")], t)
+    got += [f.gesture for f in out.fired]
+    t += DT
+check("张开手掌左划 -> SWIPE_LEFT", "SWIPE_LEFT" in got, f"({got})")
+
+# ✌️ 横移不能被当成挥手 —— 否则每次切窗口都会顺手翻一页
+eng_sv = fresh_engine()
+t, got = 0.0, []
+for i in range(20):
+    out = eng_sv.update([mkhand(dx=0.02 * i, gesture="VICTORY")], t)
+    got += [f.gesture for f in out.fired]
+    t += DT
+check("剪刀手横移不会翻页",
+      not any(g.startswith("SWIPE_") for g in got), f"({got})")
+
+eng_sg = fresh_engine()
+eng_sg.set_game_mode(True)
+t, got = 0.0, []
+for i in range(12):
+    out = eng_sg.update([mkhand(dx=0.022 * i, gesture="OPEN_PALM")], t)
+    got += [f.gesture for f in out.fired]
+    t += DT
+check("游戏模式里不判挥手", not any(g.startswith("SWIPE_") for g in got), f"({got})")
+
+print("== GestureEngine：食指滚轮 ==")
+eng_w = fresh_engine()
+t, steps, vals = 0.0, 0, []
+for i in range(36):
+    out = eng_w.update([mkhand(dy=-0.010 * i, gesture="POINT")], t)
+    for kind, v in out.continuous:
+        if kind == "scroll":
+            steps += 1
+            vals.append(v)
+    t += DT
+check("食指上移会连续滚动", steps >= 3, f"({steps} 格)")
+check("手往上 -> 值为负（执行层取反后是向上滚）", all(v < 0 for v in vals),
+      f"({vals[:4]})")
+
+eng_wn = fresh_engine()
+t, n = 0.0, 0
+for i in range(36):
+    out = eng_wn.update([mkhand(dy=-0.010 * i, gesture="VICTORY")], t)
+    n += len(out.continuous)
+    t += DT
+check("不是食指时不滚动", n == 0, f"({n} 次)")
+
+# 单手滚 -> 双手（音乐）-> 回单手：累计位移必须清掉。
+# 不清的话，回来第一帧会拿"双手模式前"的旧位置算差值，一口气滚好几格。
+eng_xp = fresh_engine()
+t = 0.0
+for i in range(20):
+    eng_xp.update([mkhand(dy=-0.010 * i, gesture="POINT")], t)
+    t += DT
+for _ in range(10):
+    eng_xp.update(two("OPEN_PALM", "OPEN_PALM"), t)
+    t += DT
+n = 0
+for _ in range(3):
+    out = eng_xp.update([mkhand(dy=-0.55, gesture="POINT")], t)
+    n += len(out.continuous)
+    t += DT
+check("从双手切回单手不会一口气滚一大段", n == 0, f"({n} 格)")
+
+print("== GestureEngine：长按进入第二层 ==")
+eng_l = fresh_engine()
+t, singles, longs = 0.0, 0, 0
+for i in range(60):                       # 2 秒
+    out = eng_l.update([mkhand(gesture="VICTORY")], t)
+    for f in out.fired:
+        if f.long:
+            longs += 1
+        else:
+            singles += 1
+    t += DT
+check("举着 2 秒只单击一次", singles == 1, f"({singles} 次)")
+check("举着 2 秒进入第二层一次", longs == 1, f"({longs} 次)")
+
+eng_ln = fresh_engine(long_press=0)
+t, longs = 0.0, 0
+for i in range(60):
+    out = eng_ln.update([mkhand(gesture="VICTORY")], t)
+    longs += sum(1 for f in out.fired if f.long)
+    t += DT
+check("long_press=0 关掉长按", longs == 0, f"({longs} 次)")
+
+# 玩家在游戏倒数那三秒本来就举着手，长按必须在游戏里彻底失效
+eng_lg = fresh_engine()
+eng_lg.set_game_mode(True)
+t, longs = 0.0, 0
+for i in range(60):
+    out = eng_lg.update([mkhand(gesture="VICTORY")], t)
+    longs += sum(1 for f in out.fired if f.long)
+    t += DT
+check("游戏模式里不判长按", longs == 0, f"({longs} 次)")
+
 # ---------------------------------------------------------------- 游戏模式
 print("== GestureEngine：游戏模式（出拳要能动、要能重新武装）==")
 # 出拳本来就是"动"出来的。桌面那条"手必须停住"的闸门如果不关，
@@ -306,8 +414,19 @@ check("当前预设是操作窗口", mapping.current_single_preset() == "window"
       f"({mapping.current_single_preset()})")
 _w = mapping.preset_bindings("window")
 _p = mapping.preset_bindings("pet")
-check("两套预设都是 14 条（7 手势 × 左右手）", len(_w) == 14 and len(_p) == 14,
-      f"({len(_w)}/{len(_p)})")
+
+
+def _hands(rows):
+    """只取左右手的格子（长按键是单维的，不算在 14 格里）。"""
+    return {k: v for k, v in rows.items() if k.split(":")[0] in ("left", "right")}
+
+
+check("两套预设的左右手都是 14 条（7 手势 × 左右手）",
+      len(_hands(_w)) == 14 and len(_hands(_p)) == 14,
+      f"({len(_hands(_w))}/{len(_hands(_p))})")
+check("两套预设都带长按（第二层）",
+      any(k.startswith("long:") for k in _w)
+      and any(k.startswith("long:") for k in _p))
 check("两套预设动作都在目录里",
       all(v in mapping.ACTION_CATALOG for v in list(_w.values()) + list(_p.values())))
 
@@ -320,6 +439,30 @@ check("切到桌宠预设后 ✋ 是唤醒",
       mapping.resolve("right", "OPEN_PALM").key == "pet:wake")
 check("识别出当前用的是桌宠预设", mapping.current_single_preset() == "pet",
       f"({mapping.current_single_preset()})")
+# 长按必须跟着预设走：窗口预设里长按 ✌️ 是"收起桌面"，但玩桌宠时
+# 举着剪刀手看它跳舞超过 1.5 秒太正常了，那时收桌面就是纯误伤。
+_lp = mapping.resolve("right", "VICTORY", long=True)
+check("桌宠预设下长按 ✌️ 是抚摸，不是收桌面",
+      _lp is not None and _lp.key == "pet:pat", f"({getattr(_lp, 'key', None)})")
+
+# 老用户的配置里根本没有 long: 键（长按是后加的功能）。这时长按的默认值
+# 必须跟着"单手表像哪套预设"走，否则玩着逗桌宠举着 ✌️ 看跳舞，
+# 1.5 秒后桌面会被收掉 —— 这是最典型的误伤。
+mapping.apply_bindings({
+    "right:VICTORY": "pet:dance", "left:VICTORY": "pet:dance",
+    "right:FIST": "pet:sleep", "left:FIST": "pet:sleep",
+    "right:OPEN_PALM": "pet:wake", "left:OPEN_PALM": "pet:wake",
+    "right:POINT": "pet:follow", "left:POINT": "pet:follow",
+    "right:THUMB_UP": "open_browser", "left:THUMB_UP": "open_browser",
+})
+_lold = mapping.resolve("right", "VICTORY", long=True)
+check("老配置没写长按键也跟逗宠预设走",
+      _lold is not None and _lold.key == "pet:pat",
+      f"({getattr(_lold, 'key', None)})")
+mapping.apply_bindings({})
+_ldef = mapping.resolve("right", "VICTORY", long=True)
+check("恢复默认后长按回到窗口预设", _ldef is not None and _ldef.key == "win_desktop",
+      f"({getattr(_ldef, 'key', None)})")
 
 mapping.apply_bindings({})
 check("切回默认后 ✌️ 又是切换窗口",
@@ -439,7 +582,13 @@ check("宠物动作仍可选用", "pet:dance" in mapping.ACTION_CATALOG
       and "pet:follow" in mapping.ACTION_CATALOG)
 
 default_map = mapping.default_bindings()
-check("默认共 20 条（14 单手 + 6 双手）", len(default_map) == 20)
+from collections import Counter                                 # noqa: E402
+_kinds = Counter(k.split(":")[0] for k in default_map)
+check("默认含 14 个单手格子", _kinds["left"] + _kinds["right"] == 14,
+      f"({_kinds['left'] + _kinds['right']})")
+check("默认含 6 个双手格子", _kinds["both"] == 6, f"({_kinds['both']})")
+check("默认带长按与挥手", _kinds["long"] >= 1 and _kinds["swipe"] == 2,
+      f"(long {_kinds['long']} / swipe {_kinds['swipe']})")
 check("默认动作都在目录里", all(v in mapping.ACTION_CATALOG for v in default_map.values()))
 check("目录带中文名", mapping.describe_action("win_max") == "最大化 / 还原"
       and mapping.describe_action("") == "不绑定")

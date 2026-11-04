@@ -48,7 +48,9 @@ class IntentRouter:
 
     # ---------------------------------------------------------------- 离散
     def dispatch_fired(self, fired: Fired) -> None:
-        intent = mapping.resolve(fired.side, fired.gesture)
+        # long=True 时查的是"第二层"表（长按）；挥手手势名自带方向前缀，
+        # 两种都由 resolve 统一分流，这里不做判断。
+        intent = mapping.resolve(fired.side, fired.gesture, fired.long)
         if intent is None:
             return
 

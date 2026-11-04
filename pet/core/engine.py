@@ -32,20 +32,29 @@ from gestures import (
     Debouncer,
     GestureSmoother,
     MotionGate,
+    StepAccumulator,
+    SwipeDetector,
     analyze_two_hands,
     TwoHandState,
 )
-from hand_tracker import Hand
+from hand_tracker import Hand, MIDDLE_MCP, WRIST
 
 from .config import Config
 
 
 @dataclass
 class Fired:
-    """一次确认过的手势（还没翻译成动作）。side 为 "both" 表示双手。"""
+    """
+    一次确认过的手势（还没翻译成动作）。side 为 "both" 表示双手。
+
+    long=True 表示"触发之后继续按住"满到了第二层（见 gestures.Debouncer）。
+    挥手不走这里的手势名约定：gesture 直接是 "SWIPE_LEFT" / "SWIPE_RIGHT"，
+    side 仍然是**哪只手**划的——方向和手别是两件事，不能只留一个。
+    """
 
     gesture: str
     side: str
+    long: bool = False
 
 
 @dataclass
@@ -74,8 +83,20 @@ class GestureEngine:
 
         # 单手：三道闸门
         self.deb = Debouncer(cfg.hold, cfg.cooldown, grace=cfg.grace)
+        self.deb.long_after = max(0.0, cfg.long_press)
         self.smoother = GestureSmoother(window=5, need=3)
         self.gate = MotionGate(max_speed=cfg.still_speed) if cfg.still_gate else None
+
+        # 挥手（张开手掌左右划）= 翻页。只在张开手掌时 arm，见 SwipeDetector。
+        self.swipe = (SwipeDetector(min_travel=cfg.swipe_travel)
+                      if cfg.swipe_on else None)
+
+        # 食指滚轮：掌心上下挪 scroll_step 个掌长 = 滚一格。
+        # 不用 ContinuousMapper（每帧比 delta）——手正常速度移动时它每帧都能
+        # 出一格，一秒滚三十几格，完全没法控制。累计位移才是可预期的物理量。
+        self.scroll_step = (StepAccumulator(step_size=max(0.05, cfg.scroll_step),
+                                            max_steps=2)
+                            if cfg.scroll_step > 0 else None)
 
         # 双手：配对也要表决 + 悬停确认。
         # 以前双手没有任何滤波（直接读每帧 recognize 的结果），一帧翻车就
@@ -117,6 +138,10 @@ class GestureEngine:
         self.deb_pair.reset()
         self.pair_smoother.reset()
         self.scroll_map.reset()
+        if self.swipe is not None:
+            self.swipe.reset()
+        if self.scroll_step is not None:
+            self.scroll_step.reset()
         self._pinch_since = None
         if self.gate is not None:
             self.gate.reset()
@@ -212,6 +237,10 @@ class GestureEngine:
         """
         self.deb.reset()
         self.smoother.reset()
+        if self.swipe is not None:
+            self.swipe.reset()
+        if self.scroll_step is not None:
+            self.scroll_step.reset()
         if self.gate is not None:
             self.gate.reset()
 
@@ -220,6 +249,9 @@ class GestureEngine:
         # 只剩一只手：双手配对作废（否则下次举起两只手会继承旧进度）
         self.deb_pair.reset()
         self.pair_smoother.reset()
+        # 双手滚动的累计器也要清：留着旧的 prev，等下次举起双手时
+        # 第一帧会算出一个巨大的 delta，一下滚好几格。
+        self.scroll_map.reset()
 
         hand = st.left or st.right
         side = "left" if st.left is not None else "right"
@@ -229,6 +261,47 @@ class GestureEngine:
             g = None                       # 判不出来就别占着悬停计时
         g = self.smoother.update(g)
         out.gesture, out.side = g, side
+
+        if hand is None:                   # count==1 时不会发生，防上游改动
+            return
+
+        # ---- 食指滚轮：☝️ 保持 + 掌心上下移动 = 连续滚动 ----
+        # 放在悬停确认之前：滚动是一个持续过程，不能每挪一格就重新算一次悬停。
+        if self.scroll_step is not None and g == "POINT" and not self.game_mode:
+            palm = max(gestures._dist_metric(hand, WRIST, MIDDLE_MCP), 1e-6)
+            n = self.scroll_step.update(float(hand.center[1]) / palm)
+            if n:
+                # 手往上 -> 页面向下（和双手滚动、main.py 的符号保持一致）
+                out.continuous.append(("scroll", float(n)))
+                out.moving = True
+                self.deb.reset()           # 滚动中不累计悬停，否则滚完会顺手触发别的
+                self.swipe.reset()
+                if self.gate is not None:
+                    self.gate.reset()
+                return
+        elif self.scroll_step is not None:
+            self.scroll_step.reset()
+
+        # ---- 挥手：张开手掌横向划 = 翻页 ----
+        # 只有 OPEN_PALM 才 arm：做 ✊ 时手乱晃不该翻页。
+        # g 为 None 时继续喂（挥到一半手指糊了、形状判不出来，但手还在动）。
+        if self.swipe is not None and not self.game_mode:
+            if g == "OPEN_PALM":
+                self.swipe.arm()
+                swipe_dir = self.swipe.update(now, hand)
+            elif g is None:
+                swipe_dir = self.swipe.update(now, hand)
+            else:
+                self.swipe.reset()
+                swipe_dir = None
+            if swipe_dir:
+                out.fired.append(Fired(gesture=f"SWIPE_{swipe_dir.upper()}",
+                                       side=side))
+                out.moving = True
+                self.deb.reset()
+                if self.gate is not None:
+                    self.gate.reset()
+                return
 
         still = True
         if self.gate is not None and not self.game_mode:
@@ -240,10 +313,20 @@ class GestureEngine:
         out.progress = self.deb.progress
         if fired and stable:
             out.fired.append(Fired(gesture=stable, side=side))
+        elif self.deb.long_fired and stable and not self.game_mode:
+            # 第二层：同一个手势一直举着不松。游戏里绝不判长按 ——
+            # 玩家在倒数那三秒本来就是举着手等待，那会变成每局都误触发。
+            out.fired.append(Fired(gesture=stable, side=side, long=True))
 
     # ---------------------------------------------------------------- 双手：音乐
     def _double(self, st: TwoHandState, out: EngineOut, now: float) -> None:
         self.deb.update(None, now)         # 双手在场时抑制单手指令
+        # 单手那两个累计器同理：双手模式下不判挥手、不判食指滚轮，
+        # 但必须清掉，否则回到单手时会把"上一段"的位移算进来。
+        if self.scroll_step is not None:
+            self.scroll_step.reset()
+        if self.swipe is not None:
+            self.swipe.reset()
         if self.gate is not None:
             self.gate.reset()              # 双手模式不判静止
 
@@ -288,7 +371,9 @@ class GestureEngine:
     def stats(self) -> dict:
         return {
             "fired": self.deb.n_fired,
+            "long": self.deb.n_long,
             "pair_fired": self.deb_pair.n_fired,
+            "swipe": self.swipe.n_fired if self.swipe is not None else 0,
             "gap_reset": self.deb.n_gap_reset,
             "gap_tolerated": self.deb.n_gap_tolerated,
             "restart": self.deb.n_restart,

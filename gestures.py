@@ -341,6 +341,98 @@ class MotionGate:
         self.speed = 0.0
 
 
+class SwipeDetector:
+    """
+    挥手 —— 张开手掌横向划过去，用来翻页。
+
+    为什么值得单独做一类判定：
+        静态手势必须"稳住 hold 秒"才确认，这是防误触的必要代价，但它让手势
+        天生比鼠标慢。挥手是**动能**：手划过去那一下就是意图，0.2 秒足够，
+        而且不用摆特定形状。这是手势唯一能快过鼠标的形态。
+
+    判定要同时满足四条（缺一条就会变成"手一动就翻页"）：
+        1) 横向位移够远（按掌长归一化，手离镜头远近不影响）
+        2) 位移方向单一 —— 路径长度不能远超直线距离，来回抖不算
+        3) 整个过程落在 window 内 —— 慢慢挪过去算"移动"，不算"挥"
+        4) 纵向位移不能太大 —— 上下挥手不该被当成左右翻页
+
+    arm 机制：只有**张开手掌**时才开始记录。做 ✊ 时手乱晃不会被当成挥手，
+    因为那时根本没 arm。
+    """
+
+    def __init__(self, window: float = 0.45, min_travel: Optional[float] = None,
+                 min_duration: float = 0.08, max_vertical: float = 0.6,
+                 cooldown: float = 0.5) -> None:
+        self.window = window
+        self.min_travel = min_travel    # None -> 用模块变量 SWIPE_TRAVEL
+        self.min_duration = min_duration
+        self.max_vertical = max_vertical
+        self.cooldown = cooldown
+        self._q: Deque[Tuple[float, float, float]] = deque()   # (t, x, y) 单位：掌长
+        self._armed = False
+        self._until = 0.0
+        self.n_fired = 0
+
+    def arm(self) -> None:
+        """张开手掌时调用。记录从这一刻起才算数。"""
+        self._armed = True
+
+    def update(self, now: float, hand: Hand) -> Optional[str]:
+        """返回 "left" / "right" / None。方向是**手移动的方向**（镜像后的屏幕方向）。"""
+        if not self._armed:
+            return None
+        # 冷却期间**完全不记轨迹**：否则冷结束那一刻，冷却里攒下的位移
+        # 会被当成一次新挥手，表现就是"划一下翻了两页"。
+        if now < self._until:
+            return None
+
+        x = float(hand.center[0]) * hand.aspect      # x 换算到等比空间
+        y = float(hand.center[1])
+        palm = max(_dist_metric(hand, WRIST, MIDDLE_MCP), 1e-6)
+        self._q.append((now, x / palm, y / palm))
+
+        while self._q and now - self._q[0][0] > self.window:
+            self._q.popleft()
+
+        # 至少 4 帧才有"轨迹"，两三帧的位移分不清是挥手还是检测跳变
+        if len(self._q) < 4:
+            return None
+
+        t0, x0, y0 = self._q[0]
+        t1, x1, y1 = self._q[-1]
+        dx, dy = x1 - x0, y1 - y0
+        dur = t1 - t0
+        travel = self.min_travel if self.min_travel is not None else SWIPE_TRAVEL
+
+        if dur < self.min_duration or abs(dx) < travel:
+            return None
+        if abs(dy) > abs(dx) * self.max_vertical:
+            return None
+
+        # 单调性：一路划过去的路径长度 ≈ 直线距离；来回摆会远大于它
+        path, prev = 0.0, None
+        for _t, qx, _qy in self._q:
+            if prev is not None:
+                path += abs(qx - prev)
+            prev = qx
+        if path > abs(dx) * 1.7:
+            return None
+
+        # 触发后清空轨迹：同一段划动只算一次，再来必须重新划
+        self._q.clear()
+        self._until = now + self.cooldown
+        self.n_fired += 1
+        return "right" if dx > 0 else "left"
+
+    def reset(self) -> None:
+        self._q.clear()
+        self._armed = False
+
+
+#: 挥手最小位移（掌长）。放在模块级是为了和 PINCH_RATIO 一样能被 --swipe 调。
+SWIPE_TRAVEL = 1.6
+
+
 class Debouncer:
     """
     手势防抖 + 悬停确认 + 边沿触发。
@@ -374,8 +466,19 @@ class Debouncer:
         self.stable: Optional[str] = None
         self.progress: float = 0.0      # 0~1，用于画悬停进度条
 
+        # ---- 长按（第二层动作）----
+        # 触发之后**不松手**继续按住，超过 long_after 秒再上报一次。
+        # 为什么长按而不是"连做两次"：连做两次的第一下已经执行过单击动作，
+        # 撤不回来（第一次必然已经切过窗口）；长按是"等够了才进入第二层"，
+        # 只会发生一次，没有副作用。
+        self.long_after: float = 0.0    # 0 = 关闭长按
+        self.long_fired: bool = False   # 本次 update 是否刚满长按
+        self._long_armed: bool = True   # 同一个手势只长按一次，变化后重新武装
+        self.long_progress: float = 0.0
+
         # 诊断计数（--trace 用），不参与判定
         self.n_fired = 0
+        self.n_long = 0
         self.n_restart = 0
         self.n_gap_tolerated = 0
         self.n_gap_reset = 0
@@ -400,6 +503,7 @@ class Debouncer:
         # （把整段移动时间一次性加进悬停），举手挥一下就直接触发了。
         dt = 0.0 if self._last_call_at is None else now - self._last_call_at
         self._last_call_at = now
+        self.long_fired = False            # 每帧复位：只有真正满长按的那一帧为 True
 
         if moving and raw is not None:
             self.n_motion_paused += 1
@@ -415,6 +519,8 @@ class Debouncer:
             self._cand, self.stable, self.progress = None, None, 0.0
             self._held = 0.0
             self._armed = True
+            self._long_armed = True
+            self.long_progress = 0.0
             return None, False
 
         self._last_raw_at = now
@@ -422,12 +528,18 @@ class Debouncer:
         if raw != self._cand:
             self._cand, self._held, self.stable = raw, 0.0, None
             self.progress = 0.0
+            self.long_progress = 0.0
             self._armed = True
+            self._long_armed = True
             self.n_restart += 1
             return None, False
 
         self._held += dt
         self.progress = min(1.0, self._held / self.hold) if self.hold > 0 else 1.0
+        if self.long_after > 0 and self._held > self.hold:
+            self.long_progress = min(1.0, (self._held - self.hold) / self.long_after)
+        else:
+            self.long_progress = 0.0
 
         if self._held < self.hold:
             self.stable = None
@@ -439,6 +551,14 @@ class Debouncer:
             self._armed = False          # 必须松手才重新武装
             self.n_fired += 1
             return raw, True
+
+        # 长按：只有"已经触发过、还一直举着"才会走到这里。
+        # 同一个手势只报一次，中途换手势或松手会重新武装（见上面的分支）。
+        if (self.long_after > 0 and self._long_armed
+                and self._held >= self.hold + self.long_after):
+            self._long_armed = False
+            self.long_fired = True
+            self.n_long += 1
         return raw, False
 
     def reset(self) -> None:
@@ -447,6 +567,9 @@ class Debouncer:
         self._last_call_at = None
         self._armed = True
         self._last_raw_at = 0.0
+        self._long_armed = True
+        self.long_fired = False
+        self.long_progress = 0.0
         self._fired_at.clear()
 
 

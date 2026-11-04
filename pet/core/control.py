@@ -200,8 +200,10 @@ class ControlCenter:
             return True
 
         default = mapping.default_bindings()
+        # 单手的 left/right 和长按的 long 都归"换玩法"管，先清掉再从预设重建；
+        # 挥手（swipe）不随预设变，原样保留。
         merged = {k: v for k, v in dict(self.cfg.bindings or {}).items()
-                  if str(k).split(":")[0] not in ("left", "right")}
+                  if str(k).split(":")[0] not in ("left", "right", "long")}
         for key, action in rows.items():
             # 只存"和默认不一样"的：预设窗口那套就是出厂表，落盘后 bindings
             # 回到空，以后默认表升级也能吃到（同 binding 页的 _apply）。

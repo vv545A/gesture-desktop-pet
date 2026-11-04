@@ -162,6 +162,7 @@ class BindingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._build_single(), "单手 · 窗口/桌宠")
         tabs.addTab(self._build_pair(), "双手 · 音乐")
+        tabs.addTab(self._build_extra(), "长按 / 挥手")
         root.addWidget(tabs, 1)
 
         foot = QHBoxLayout()
@@ -272,6 +273,76 @@ class BindingsDialog(QDialog):
 
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(len(mapping.PAIR_GESTURES) + 2, 1)
+        return page
+
+    def _build_extra(self) -> QWidget:
+        """
+        长按 / 挥手 —— 单手的"第二层"和"动能形态"。
+
+        为什么单独一页而不是塞进单手表：这两类没有"哪只手"这一维
+        （长按只认手势，挥手只认方向），和 14 格子的左右手表不是同一种结构，
+        混在一起会让"哪一格对应哪个下拉框"变得难解释。
+
+        为什么要把"再按住 1 秒"写出来：长按是**看不见的**动作——
+        用户不做一次永远不知道有这层。这一页本身就是说明书。
+        """
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(7)
+
+        sec = max(0.5, float(getattr(self.cfg, "long_press", 1.0)) + self.cfg.hold)
+
+        tip_long = QLabel(f"长按 —— 稳住手势后继续别松手，约 {sec:.1f} 秒进入第二层。"
+                          "只挂「结果能盖掉」的动作，多做一次也不会出事。")
+        tip_long.setObjectName("hint")
+        tip_long.setWordWrap(True)
+        outer.addWidget(tip_long)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(7)
+        for col, text in ((0, "手势"), (1, "按住不放时")):
+            lab = QLabel(text)
+            lab.setObjectName("head")
+            grid.addWidget(lab, 0, col)
+
+        cur = mapping.current_bindings()
+        for row, g in enumerate(mapping.SINGLE_GESTURES, start=1):
+            lab = QLabel(mapping.GESTURE_LABEL.get(g, g))
+            lab.setObjectName("row")
+            grid.addWidget(lab, row, 0)
+            key = mapping.LONG_PREFIX + g
+            grid.addWidget(self._combo(key, cur.get(key, "")), row, 1)
+        grid.setColumnStretch(1, 1)
+        outer.addLayout(grid)
+
+        outer.addSpacing(10)
+
+        tip_swipe = QLabel("挥手 —— 张开手掌横向划过去，0.2 秒就完成，"
+                           "不需要稳住。做握拳或剪刀手时晃手不会误触发。")
+        tip_swipe.setObjectName("hint")
+        tip_swipe.setWordWrap(True)
+        outer.addWidget(tip_swipe)
+
+        g2 = QGridLayout()
+        g2.setHorizontalSpacing(10)
+        g2.setVerticalSpacing(7)
+        for col, text in ((0, "方向"), (1, "动作")):
+            lab = QLabel(text)
+            lab.setObjectName("head")
+            g2.addWidget(lab, 0, col)
+        for row, (direction, name) in enumerate(
+                (("left", "往左划"), ("right", "往右划")), start=1):
+            lab = QLabel(name)
+            lab.setObjectName("row")
+            g2.addWidget(lab, row, 0)
+            key = mapping.SWIPE_PREFIX + direction
+            g2.addWidget(self._combo(key, cur.get(key, "")), row, 1)
+        g2.setColumnStretch(1, 1)
+        outer.addLayout(g2)
+
+        outer.addStretch(1)
         return page
 
     def _center(self) -> None:

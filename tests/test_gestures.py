@@ -174,6 +174,79 @@ check("握拳不判成捏合（ti 大）", not G.is_pinch(0.50, 0.75))
 check("捏合判成捏合", G.is_pinch(0.15, 0.15))
 check("拇指贴整排手指不算捏合", not G.is_pinch(0.30, 0.72))
 
+# ---------------------------------------------------------------- 挥手
+print("== SwipeDetector：挥手 ==")
+
+
+def swipe_path(points, arm=True):
+    """按给定轨迹喂帧，返回触发方向（触发不了返回 None）。"""
+    sw = G.SwipeDetector()
+    if arm:
+        sw.arm()
+    t, got = 0.0, None
+    for dx, dy in points:
+        got = sw.update(t, mkhand(dx=dx, dy=dy)) or got
+        t += DT
+    return got
+
+
+check("张开手掌快速右划 -> right",
+      swipe_path([(0.022 * i, 0.0) for i in range(12)]) == "right")
+check("反向划 -> left",
+      swipe_path([(0.242 - 0.022 * i, 0.0) for i in range(12)]) == "left")
+check("慢慢挪过去不算挥手",
+      swipe_path([(0.008 * i, 0.0) for i in range(12)]) is None)
+check("上下移动不算挥手",
+      swipe_path([(0.0, 0.022 * i) for i in range(12)]) is None)
+# 手在 0 和 0.2 之间来回摆：首尾差够大，但路径长度远超直线 —— 这不是"划过去"
+check("来回摆手不算挥手",
+      swipe_path([(0.0 if i % 2 else 0.2, 0.0) for i in range(12)]) is None)
+check("没张开手掌（没 arm）不判定",
+      swipe_path([(0.022 * i, 0.0) for i in range(12)], arm=False) is None)
+
+# 冷却：同一段动作不能翻两页
+_sw = G.SwipeDetector()
+_sw.arm()
+_t, _first, _second = 0.0, None, None
+for i in range(12):
+    _first = _sw.update(_t, mkhand(dx=0.022 * i)) or _first
+    _t += DT
+for i in range(12):
+    _second = _sw.update(_t, mkhand(dx=0.242 - 0.022 * i)) or _second
+    _t += DT
+check("触发后有冷却，划一下不会翻两页", _first == "right" and _second is None,
+      f"({_first}/{_second})")
+
+# ---------------------------------------------------------------- 长按
+print("== Debouncer：长按（第二层）==")
+_dl = G.Debouncer(hold_seconds=0.5, cooldown=0.6, grace=0.35)
+_dl.long_after = 1.0
+_t, _fires, _longs = 0.0, 0, 0
+for _i in range(60):                       # 2 秒，远超 0.5 + 1.0
+    _s, _f = _dl.update("VICTORY", _t)
+    _fires += bool(_f)
+    _longs += bool(_dl.long_fired)
+    _t += DT
+check("长按只单击一次", _fires == 1, f"({_fires} 次)")
+check("长按只进入第二层一次", _longs == 1, f"({_longs} 次)")
+
+# 长按之后继续举着，不该无限重复
+_t2, _more = _t, 0
+for _i in range(90):
+    _dl.update("VICTORY", _t2)
+    _more += bool(_dl.long_fired)
+    _t2 += DT
+check("继续举着也不会反复长按", _more == 0, f"({_more} 次)")
+
+_dl2 = G.Debouncer(hold_seconds=0.5, cooldown=0.6, grace=0.35)
+_dl2.long_after = 0.0                      # 关闭长按
+_t3, _n3 = 0.0, 0
+for _i in range(60):
+    _dl2.update("VICTORY", _t3)
+    _n3 += bool(_dl2.long_fired)
+    _t3 += DT
+check("long_after=0 时完全不长按", _n3 == 0)
+
 # ---------------------------------------------------------------- 左右手
 print("== 左右手判定 ==")
 hs = [mkhand(dx=0.2), mkhand(dx=-0.2)]
