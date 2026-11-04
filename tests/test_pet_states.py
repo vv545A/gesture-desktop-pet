@@ -211,6 +211,7 @@ check("没有亲密度存档时也不崩", win.bond is None)
 
 print("== 情绪反应 ==")
 from pet.core.events import EmotionChanged                         # noqa: E402
+from pet.core.events import PetSay                                 # noqa: E402
 
 win = make_window()
 win._on_emotion(EmotionChanged(emotion="tired", strength=0.8))
@@ -331,5 +332,38 @@ check("游戏确实挂上了待启动", control2.worker._game_pending is True)
 
 control2.set_enabled(False)
 check("情绪感知也会顺手开摄像头", control2.set_emotion(True) is True and engine.enabled is True)
+
+print("== 石头剪刀布：点了就有回应（不能静默）==")
+# 用户报"点开石头剪刀布没法玩"。除了摄像头和判定链路，还有一层是**说的话**：
+# 关闭时说成"三秒后出拳"、识别关着时说"三秒后出拳"然后干等，都会让人以为坏了。
+says2 = []
+bus.subscribe(PetSay, lambda e: says2.append(e.text))
+control2.set_enabled(True)
+bus.drain()
+says2.clear()
+
+control2.set_game(False)
+bus.drain()
+check("关掉游戏说『不玩啦』", bool(says2) and "不玩" in says2[-1])
+
+says2.clear()
+control2.set_game(True)
+bus.drain()
+check("识别开着时直接报倒数", bool(says2) and "三秒后出拳" in says2[-1])
+
+says2.clear()
+control2.set_enabled(False)
+bus.drain()
+says2.clear()
+control2.set_game(True)
+bus.drain()
+check("识别关着时先说在开摄像头（不谎报倒数）",
+      bool(says2) and "摄像头" in says2[-1] and "三秒后出拳" not in says2[-1])
+check("这条路上摄像头也真的开了", engine.enabled is True)
+
+# 刚点开（还在 pending）再点一次应该能关掉，而不是"再开一次"
+control2.set_game(True)
+check("pending 状态下能关掉游戏", control2.toggle_game() is False
+      and control2.worker._game_pending is False)
 
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

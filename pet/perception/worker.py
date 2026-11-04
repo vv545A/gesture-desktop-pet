@@ -70,6 +70,7 @@ class PerceptionWorker(threading.Thread):
         self._game_sig = None          # 上一次广播过的状态签名（用来节流）
         self._game_pending = False     # 待启动：由主循环用统一时钟启动
         self._game_was_active = False  # 上一帧是否在游戏里（用来发"结束"那一次）
+        self._game_phase = "idle"      # 上一帧的游戏阶段（进入 armed 时要重新武装）
 
         # ---- 在场检测 / 情绪感知 ----
         # 检测器**常驻创建**，是否真的调用由 cfg 决定（每帧读一次）。
@@ -180,6 +181,8 @@ class PerceptionWorker(threading.Thread):
         slow = 0
         first_ready = True
         failed_shown = False
+        read_fail = 0                  # 连续读帧失败次数（用来判断"打开了但没画面"）
+        read_fail_shown = False        # 这个毛病只说一次，别每 3 秒刷一句
 
         while not self._stop.is_set():
             # ---- 暂停中：把摄像头还回去，等恢复 ----
@@ -216,6 +219,15 @@ class PerceptionWorker(threading.Thread):
 
             ok, frame = cap.read()
             if not ok:
+                read_fail += 1
+                # 摄像头"打开成功"和"能读到画面"是两件事。Windows 上 MSMF
+                # 打开成功、read 却一直超时的情况很常见（被别的程序占着）。
+                # 以前这里只写日志，用户看到的是"桌宠一言不发、点了也没反应"——
+                # 必须说出来，否则所有玩法都像是坏的。
+                if read_fail >= 12 and not read_fail_shown:
+                    read_fail_shown = True
+                    self.bus.post(PerceptionFailed(
+                        message=f"摄像头打开了但读不到画面（被别的程序占着？）"))
                 log.warning("读帧失败，重连摄像头")
                 try:
                     cap.release()
@@ -224,6 +236,8 @@ class PerceptionWorker(threading.Thread):
                 cap = None
                 time.sleep(0.3)
                 continue
+            read_fail = 0
+            read_fail_shown = False
 
             # 镜像：手往右，屏幕上的手也往右。桌宠跟随靠的就是这个坐标系，
             # 少了这一步，桌宠会往反方向跑（最典型的"手感不对"）。
@@ -255,6 +269,15 @@ class PerceptionWorker(threading.Thread):
                 self._game_pending = False
                 self.game.start(now)
                 self._game_sig = None
+
+            # 游戏模式：出拳不判"手静止"，而且进入"出！"那一帧要重新武装
+            # 悬停确认器 —— 玩家多半在倒数时就摆好了手势，那一下已经被吃掉，
+            # 不重来的话他到"出！"时反而永远触发不了（见 engine.rearm 注释）。
+            if self.game.active and self.game.phase == "armed" \
+                    and self._game_phase != "armed":
+                self.engine.rearm()
+            self._game_phase = self.game.phase
+            self.engine.set_game_mode(self.game.active)
 
             out = self.engine.update(hands, now)
             self.n_frames += 1

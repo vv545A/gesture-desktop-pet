@@ -98,6 +98,10 @@ class GestureEngine:
         # headless 模式和单元测试也就不必拖上游戏代码。
         self._game_hook = None
         self._pinch_since: Optional[float] = None   # 双手捏合开始计时点
+        # 游戏进行中：不要求"手静止"，确认时间也短一截。
+        # 出拳本来就是"动"出来的，用桌面的静止闸门去卡它，等于不让玩。
+        self.game_mode = False
+        self.GAME_HOLD = 0.30
 
     # ---------------------------------------------------------------- 开关
     def set_enabled(self, on: bool) -> bool:
@@ -180,6 +184,37 @@ class GestureEngine:
         """挂上/摘掉手势拦截器。传 None = 退出游戏，手势恢复正常含义。"""
         self._game_hook = hook
 
+    def set_game_mode(self, on: bool) -> None:
+        """
+        游戏进行中 -> True。只在**值变化**时动状态，主循环每帧调它是安全的。
+
+        两件事：
+          1) 关掉静止闸门（`_single` 里直接跳过 MotionGate）。出拳时手在动，
+             闸门会让确认器每帧 "return None"，表现就是"怎么比都不出拳"。
+          2) 确认时间从 0.5s 缩到 0.3s。游戏里一秒定胜负，等半秒太钝。
+        """
+        on = bool(on)
+        if on == self.game_mode:
+            return
+        self.game_mode = on
+        self.deb.hold = self.GAME_HOLD if on else max(self.cfg.hold, 1e-3)
+        self._reset_all()
+
+    def rearm(self) -> None:
+        """
+        重新武装悬停确认 —— 进入 "出！" 那一刻调用。
+
+        为什么必须重来一次：玩家很自然会在倒数 3 秒里就摆好手势。那 3 秒里
+        确认器早就 fire 过一遍（被游戏当成"还没到出拳时间"忽略），而 Debouncer
+        的规则是"触发后必须松手才能再触发"。结果玩家举着手等到"出！"，
+        却永远等不到第二次触发——这就是"点开游戏也玩不了"最阴的一条。
+        清空计时后，已经举着的手势会在 0.3 秒内重新确认，正好接上"出！"。
+        """
+        self.deb.reset()
+        self.smoother.reset()
+        if self.gate is not None:
+            self.gate.reset()
+
     # ---------------------------------------------------------------- 单手：窗口
     def _single(self, st: TwoHandState, out: EngineOut, now: float) -> None:
         # 只剩一只手：双手配对作废（否则下次举起两只手会继承旧进度）
@@ -196,7 +231,7 @@ class GestureEngine:
         out.gesture, out.side = g, side
 
         still = True
-        if self.gate is not None:
+        if self.gate is not None and not self.game_mode:
             still = self.gate.update(now, hand)
             out.speed = self.gate.speed
         out.moving = not still

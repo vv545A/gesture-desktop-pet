@@ -130,6 +130,74 @@ for i in range(45):
     t += DT
 check("持续横移 1.5 秒不触发", n == 0, f"({n} 次)")
 
+# ---------------------------------------------------------------- 游戏模式
+print("== GestureEngine：游戏模式（出拳要能动、要能重新武装）==")
+# 出拳本来就是"动"出来的。桌面那条"手必须停住"的闸门如果不关，
+# 玩家比着 ✊ 挥一下就永远出不了拳 —— 这是"点开游戏也玩不了"的直接原因。
+eng_g = fresh_engine()
+eng_g.set_game_mode(True)
+t, n = 0.0, 0
+for i in range(20):
+    out = eng_g.update([mkhand(dx=0.004 * i, gesture="FIST")], t)
+    n += len(out.fired)
+    t += DT
+check("游戏模式下手在动也能出拳", n >= 1, f"({n} 次)")
+
+# 倒数 3 秒里玩家多半已经摆好手势了，那一下会被"确认器 fire 掉 + 游戏忽略"。
+# 进入 "出！" 时必须 rearm，否则玩家举着手永远等不到第二次触发。
+eng_r = fresh_engine()
+eng_r.set_game_mode(True)
+t, first = 0.0, []
+for _ in range(20):                      # 举着 0.66s，足够触发一次
+    out = eng_r.update([mkhand(gesture="FIST")], t)
+    first += out.fired
+    t += DT
+check("倒数期间已经触发过一次（会被游戏吃掉）", len(first) == 1, f"({len(first)})")
+eng_r.rearm()
+second = []
+for _ in range(20):                      # 重新投票 3 帧 + 悬停 0.30s，留足余量
+    out = eng_r.update([mkhand(gesture="FIST")], t)
+    second += out.fired
+    t += DT
+check("重新武装后举着的手势能再次确认", len(second) == 1, f"({len(second)})")
+
+eng_g.set_game_mode(False)
+check("退出游戏后确认时间还原", abs(eng_g.deb.hold - Config().hold) < 1e-6,
+      f"({eng_g.deb.hold})")
+
+# ---------------------------------------------------------------- 游戏端到端
+print("== 石头剪刀布：从倒数到出拳（整条链路）==")
+from pet.game.rps import RPSGame                                  # noqa: E402
+
+game = RPSGame()
+game.start(1000.0)
+eng_play = fresh_engine()
+eng_play.set_game_mode(True)
+eng_play.set_game_hook(lambda gesture, now: game.play(gesture, now) is not None)
+
+t = 1000.0
+while game.phase == "countdown":           # 走完 3 秒倒数
+    t += DT
+    game.tick(t)
+check("倒数结束后进入可以出拳的状态", game.phase == "armed", f"({game.phase})")
+
+# 玩家在这一刻已经举着 ✊ 了 —— worker 进入 armed 时会 rearm，这里照样来一次
+eng_play.rearm()
+round_ = None
+for _ in range(20):
+    out = eng_play.update([mkhand(gesture="FIST")], t)
+    for f in out.fired:
+        eng_play._game_hook(f.gesture, t)
+    round_ = game.round
+    if round_ is not None:
+        break
+    t += DT
+check("倒数结束后比 ✊ 真的出石头",
+      round_ is not None and round_.player == "FIST",
+      f"({round_.player if round_ else '-'})")
+check("出一拳就有比分", round_ is not None and sum(round_.score) == 1,
+      f"({round_.score if round_ else '-'})")
+
 # ---------------------------------------------------------------- 双手（音乐）
 print("== GestureEngine：双手同手势 -> 音乐 ==")
 eng3 = fresh_engine()
@@ -214,31 +282,50 @@ check("张开不动不产生滚动", not steps)
 check("张开不动仍然触发配对（播放/暂停）", bool(fired))
 
 # ---------------------------------------------------------------- 映射
-print("== 映射表：单手=宠物互动 ==")
+print("== 映射表：单手默认=操作窗口 ==")
 r = mapping.resolve("right", "POINT")
 l = mapping.resolve("left", "POINT")
-check("食指 -> 跟随鼠标", r is not None and r.key == "pet:follow", f"({r.key})")
-check("左手食指同样跟随", l is not None and l.key == "pet:follow", f"({l.key})")
+check("右手食指 -> 贴右半屏", r is not None and r.key == "win_snap_right", f"({r.key})")
+check("左手食指 -> 贴左半屏（指哪边贴哪边）",
+      l is not None and l.key == "win_snap_left", f"({l.key})")
 mx = mapping.resolve("right", "OPEN_PALM")
-check("张开手掌 -> 唤醒", mx is not None and mx.key == "pet:wake", f"({mx.key})")
+check("张开手掌 -> 最大化/还原", mx is not None and mx.key == "win_max", f"({mx.key})")
 fist = mapping.resolve("left", "FIST")
-check("握拳 -> 睡觉", fist is not None and fist.key == "pet:sleep", f"({fist.key})")
+check("握拳 -> 最小化", fist is not None and fist.key == "win_min", f"({fist.key})")
 vic = mapping.resolve("right", "VICTORY")
-check("剪刀手 -> 跳舞", vic is not None and vic.key == "pet:dance", f"({vic.key})")
+check("剪刀手 -> 切换窗口", vic is not None and vic.key == "alt_tab", f"({vic.key})")
 thumb = mapping.resolve("right", "THUMB_UP")
-check("点赞 -> 打开浏览器（默认表唯一带系统副作用的手势）",
-      thumb is not None and thumb.key == "open_browser", f"({thumb.key})")
-
-# 这条是产品红线：三个纯宠物手势不该牵动任何系统状态，
-# 将来谁手滑把 pet:sleep 换成 win_min，这里要立刻红。
-_pet_only = ("VICTORY", "FIST", "OPEN_PALM", "POINT")
-check("宠物互动手势不碰系统",
-      all(mapping.resolve(s, g).key.startswith("pet:")
-          for s in ("left", "right") for g in _pet_only))
+check("点赞 -> 窗口置顶", thumb is not None and thumb.key == "win_topmost", f"({thumb.key})")
 
 pat = mapping.resolve("right", "PINCH")
 check("单手捏合只摸宠物（不碰系统）", pat is not None and pat.key.startswith("pet:"),
       f"({pat.key})")
+
+print("== 单手预设：两条路都能走 ==")
+check("当前预设是操作窗口", mapping.current_single_preset() == "window",
+      f"({mapping.current_single_preset()})")
+_w = mapping.preset_bindings("window")
+_p = mapping.preset_bindings("pet")
+check("两套预设都是 14 条（7 手势 × 左右手）", len(_w) == 14 and len(_p) == 14,
+      f"({len(_w)}/{len(_p)})")
+check("两套预设动作都在目录里",
+      all(v in mapping.ACTION_CATALOG for v in list(_w.values()) + list(_p.values())))
+
+# 切到"逗桌宠"：整套生效，不用逐行改
+mapping.apply_bindings(
+    {k: v for k, v in _p.items() if _w.get(k) != v})
+check("切到桌宠预设后 ✌️ 是跳舞",
+      mapping.resolve("right", "VICTORY").key == "pet:dance")
+check("切到桌宠预设后 ✋ 是唤醒",
+      mapping.resolve("right", "OPEN_PALM").key == "pet:wake")
+check("识别出当前用的是桌宠预设", mapping.current_single_preset() == "pet",
+      f"({mapping.current_single_preset()})")
+
+mapping.apply_bindings({})
+check("切回默认后 ✌️ 又是切换窗口",
+      mapping.resolve("right", "VICTORY").key == "alt_tab")
+check("切回默认后 ✋ 又是最大化",
+      mapping.resolve("right", "OPEN_PALM").key == "win_max")
 
 print("== 映射表：双手=音乐 ==")
 pp = mapping.resolve("both", "OPEN_PALM")
@@ -323,33 +410,33 @@ except OSError:
 # ---------------------------------------------------------------- 手势绑定
 print("== 手势绑定（对照表页面）==")
 mapping.apply_bindings({})
-check("默认 右手✋ = 唤醒", mapping.resolve("right", "OPEN_PALM").key == "pet:wake")
+check("默认 右手✋ = 最大化", mapping.resolve("right", "OPEN_PALM").key == "win_max")
 check("默认 双手✊ = 静音", mapping.resolve("both", "FIST").key == "mute")
 
-mapping.apply_bindings({"right:OPEN_PALM": "win_min", "both:FIST": "play_pause"})
-check("改绑 右手✋ 到窗口动作", mapping.resolve("right", "OPEN_PALM").key == "win_min")
+mapping.apply_bindings({"right:OPEN_PALM": "pet:wake", "both:FIST": "play_pause"})
+check("改绑 右手✋ 到宠物动作", mapping.resolve("right", "OPEN_PALM").key == "pet:wake")
 check("改绑 双手✊", mapping.resolve("both", "FIST").key == "play_pause")
-check("没改的 左手✋ 仍是默认", mapping.resolve("left", "OPEN_PALM").key == "pet:wake")
-check("台词跟着动作走", "收起来" in mapping.resolve("right", "OPEN_PALM").bubble)
+check("没改的 左手✋ 仍是默认", mapping.resolve("left", "OPEN_PALM").key == "win_max")
+check("台词跟着动作走", "醒啦" in mapping.resolve("right", "OPEN_PALM").bubble)
 
 # 左手有一条"没有就用右手"的 fallback，所以取消绑定必须能被真正关掉
 mapping.apply_bindings({"left:VICTORY": ""})
 check("取消绑定不会被右手继承", mapping.resolve("left", "VICTORY") is None)
-check("取消后右手✌️ 照旧", mapping.resolve("right", "VICTORY").key == "pet:dance")
+check("取消后右手✌️ 照旧", mapping.resolve("right", "VICTORY").key == "alt_tab")
 
 mapping.apply_bindings({"right:FIST": "根本没有这个动作"})
-check("动作名拼错时保持默认", mapping.resolve("right", "FIST").key == "pet:sleep")
+check("动作名拼错时保持默认", mapping.resolve("right", "FIST").key == "win_min")
 
 mapping.apply_bindings({"both:FIST": ""})
 check("双手也能取消", mapping.resolve("both", "FIST") is None)
 
 mapping.apply_bindings({})
-check("恢复默认", mapping.resolve("right", "OPEN_PALM").key == "pet:wake"
+check("恢复默认", mapping.resolve("right", "OPEN_PALM").key == "win_max"
       and mapping.resolve("both", "FIST").key == "mute")
 
-# 窗口动作没从目录里删掉，只是默认不绑——用户随时能改回去
-check("窗口动作仍可选用", "win_max" in mapping.ACTION_CATALOG
-      and "win_snap_left" in mapping.ACTION_CATALOG)
+# 宠物动作没从目录里删掉，只是默认不绑——"两条路"的另一条随时能切过去
+check("宠物动作仍可选用", "pet:dance" in mapping.ACTION_CATALOG
+      and "pet:follow" in mapping.ACTION_CATALOG)
 
 default_map = mapping.default_bindings()
 check("默认共 20 条（14 单手 + 6 双手）", len(default_map) == 20)

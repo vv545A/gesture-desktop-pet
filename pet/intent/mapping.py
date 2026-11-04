@@ -7,18 +7,20 @@
     如果把映射写死在判定代码里，每次改主意都要动核心逻辑。
     现在改这张表就行（一行一个功能）。
 
-**分工按手的数量来**（2026-11 转向宠物互动）：
-    单手 = 和桌宠互动（✌️跳舞 / ✊睡觉 / ✋唤醒 / ☝️跟随 / 👍开浏览器）
+**分工按手的数量来**：
+    单手 = 操作窗口（✋最大化 / ✊最小化 / ✌️切窗口 / ☝️贴边 / 👍置顶）
     双手 = 音乐播放（两只手做同一个手势，是有仪式感的"第二层"，
            也和单手彻底分开，不会互相压到）
 
-为什么把宠物互动放在单手：
-    单手是"对着宠物说话"——一个手势一个反应，语义直观、学习成本为零。
-    双手留给音乐，是因为"两只手同一个手势"本身误触率极低，正好配
-    "不希望误触"的系统操作；而宠物互动就算误触一次也只是它多跳了
-    一段舞，代价可以忽略。
-    窗口操作（最大化/贴边/置顶）没删，全部留在 ACTION_CATALOG 里，
-    想切回来在对照表里改绑即可 —— 默认表只决定"出厂状态"。
+**单手有两条路，默认是"操作窗口"**：
+    单手是高频动作，用户装上手势桌宠的第一诉求几乎都是"替我省几次
+    找鼠标的工夫"，所以出厂状态必须是窗口操作。宠物互动（✌️跳舞 /
+    ✊睡觉 / ✋唤醒 / ☝️跟随 / 🤏抚摸）本身很受欢迎，但它是"娱乐向"的，
+    误触代价是宠物多跳一段舞——适合作为**主动切换**的第二条路，
+    不适合替用户决定。
+    两套表都在这里（`_WINDOW_SINGLE` / `_PET_SINGLE`），对照表页面顶部
+    一键整套切换，不用逐行改 14 个下拉框。
+    逐条改绑仍然支持 —— 预设只决定"一次改一整张"的快捷方式。
 
 Intent.key 的四种取值：
     actions.WINDOW_ACTIONS 里的窗口动作   （win_max / win_snap_left …）
@@ -41,10 +43,10 @@ class Intent:
     mood: str = "happy"
 
 
-# ------------------------------------------------------------------ 单手：宠物
+# ------------------------------------------------------------------ 单手：两张预设
 # 左右手各写一份：对照表里能看到"左手/右手"两行，用户想给两只手设不同动作时
 # 也有地方改（apply_bindings 支持 left:XXX 单独覆盖）。
-SINGLE_HINT = "单手 = 和桌宠互动"
+SINGLE_HINT = "单手 = 操作窗口"
 
 #: 单手能用的手势（对照表页面的左列按这个顺序排）
 SINGLE_GESTURES = ("OPEN_PALM", "FIST", "VICTORY", "POINT",
@@ -102,7 +104,34 @@ ACTION_CATALOG: Dict[str, Tuple[str, str]] = {
     "open_browser": ("打开浏览器", "proud"),
 }
 
-_DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = {
+_WINDOW_SINGLE: Dict[Tuple[str, str], Intent] = {
+    # ✋ 张开 -> 最大化 / 还原（同一个手势，按窗口当前状态决定做哪一半）
+    ("right", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
+    ("left", "OPEN_PALM"): Intent("win_max", "最大化/还原", "变——大！"),
+    # ✊ 握拳 -> 最小化
+    ("right", "FIST"): Intent("win_min", "最小化", "先收起来～"),
+    ("left", "FIST"): Intent("win_min", "最小化", "先收起来～"),
+    # ✌️ 剪刀手 -> 切换窗口
+    ("right", "VICTORY"): Intent("alt_tab", "切换窗口", "换一个窗口～"),
+    ("left", "VICTORY"): Intent("alt_tab", "切换窗口", "换一个窗口～"),
+    # ☝️ 食指 -> 贴左/右半屏（左手贴左、右手贴右，指哪边贴哪边）
+    ("left", "POINT"): Intent("win_snap_left", "贴左半屏", "靠左边站好"),
+    ("right", "POINT"): Intent("win_snap_right", "贴右半屏", "靠右边站好"),
+    # 👍 点赞 -> 置顶 / 取消置顶
+    ("right", "THUMB_UP"): Intent("win_topmost", "窗口置顶", "钉在最上层！"),
+    ("left", "THUMB_UP"): Intent("win_topmost", "窗口置顶", "钉在最上层！"),
+    # 👎 踩 -> 全部收起（显示桌面，再比一次就回来）
+    ("right", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…"),
+    ("left", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…"),
+    # 🤏 捏合不驱动任何系统功能，只让桌宠有反应 ——
+    # 这是"氛围感优先、绝不添乱"的示范：捏一下就是撸它一下。
+    ("right", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
+    ("left", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
+}
+
+#: 另一条路：单手 = 逗桌宠。整套手势只让宠物有反应，只有 👍 会开浏览器
+#: （过白名单，可关）。用户想"纯玩"时一键切过来，切回去也一样一键。
+_PET_SINGLE: Dict[Tuple[str, str], Intent] = {
     # ✌️ 剪刀手 -> 跳舞。宠物最先要有的反应，也是五指里最好认的形状
     ("right", "VICTORY"): Intent("pet:dance", "跳舞", "看我跳一个！"),
     ("left", "VICTORY"): Intent("pet:dance", "跳舞", "看我跳一个！"),
@@ -115,21 +144,29 @@ _DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = {
     # ☝️ 食指 -> 切换「跟随鼠标」。再比一次或 ✊ 睡觉都会退出
     ("right", "POINT"): Intent("pet:follow", "跟随鼠标", "跟着你走～", "listen"),
     ("left", "POINT"): Intent("pet:follow", "跟随鼠标", "跟着你走～", "listen"),
-    # 👍 点赞 -> 打开浏览器。**默认表里唯一带系统副作用的手势**，且过白名单
+    # 👍 点赞 -> 打开浏览器。**这张表里唯一带系统副作用的手势**，且过白名单
     ("right", "THUMB_UP"): Intent("open_browser", "打开浏览器", "帮你开个网页～",
                                   "proud"),
     ("left", "THUMB_UP"): Intent("open_browser", "打开浏览器", "帮你开个网页～",
                                  "proud"),
-    # 👎 踩 -> 保留的窗口能力（不在 MVP 主线里，但留着好使，
-    #         想换成纯宠物动作，在对照表里改绑即可）
+    # 👎 踩 -> 收起所有窗口。纯玩表里也留一个"收拾桌面"的后门，
+    #          免得切过来之后连收窗口都得切回去
     ("right", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…",
                                     "calm"),
     ("left", "THUMB_DOWN"): Intent("win_desktop", "收起所有窗口", "都先让让…",
                                    "calm"),
-    # 🤏 捏合不驱动任何系统功能，只让桌宠有反应
+    # 🤏 捏合 -> 抚摸
     ("right", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
     ("left", "PINCH"): Intent("pet:pat", "抚摸", "嘿嘿…好痒", "shy"),
 }
+
+#: 出厂状态：单手 = 操作窗口
+_DEFAULT_SINGLE: Dict[Tuple[str, str], Intent] = dict(_WINDOW_SINGLE)
+
+#: 单手预设的显示名。顺序就是对照表页面里按钮的顺序（默认的那个在最前）。
+SINGLE_PRESET_LABEL: Dict[str, str] = {"window": "操作窗口", "pet": "逗桌宠"}
+SINGLE_PRESETS: Tuple[str, ...] = ("window", "pet")
+_PRESET_TABLES = {"window": _WINDOW_SINGLE, "pet": _PET_SINGLE}
 
 # ------------------------------------------------------------------ 双手：音乐
 # 两只手做**同一个**手势才算数（左右不一样就什么也不做，见 engine._double）。
@@ -232,7 +269,7 @@ _FALLBACK_BUBBLE: Dict[str, str] = {
 
 def _bubble_of(action: str) -> str:
     """同一个动作在默认表里的台词 —— 换绑之后台词也该跟着动作走。"""
-    for table in (_DEFAULT_SINGLE.values(), _DEFAULT_PAIR.values()):
+    for table in (_DEFAULT_SINGLE.values(), _PET_SINGLE.values(), _PAIR.values()):
         for it in table:
             if it.key == action:
                 return it.bubble
@@ -266,6 +303,39 @@ def current_bindings() -> Dict[str, str]:
     for g, it in _PAIR.items():
         out[binding_key("both", g)] = it.key
     return out
+
+
+# ------------------------------------------------------------------ 单手预设
+# 为什么要有"预设"这一层：
+#     单手有 14 个格子（7 手势 × 左右手）。想从"操作窗口"换到"逗桌宠"，
+#     逐个点 14 次下拉框是纯体力活，而且改到第 9 个时必然会忘记前面改过什么。
+#     预设 = 一次性把整张表换掉，两条路才真的都是"路"，不是"要折腾半天"。
+
+def preset_bindings(name: str) -> Dict[str, str]:
+    """某一套单手预设 -> {binding_key: action}。未知名字返回空字典。"""
+    table = _PRESET_TABLES.get(name)
+    if table is None:
+        return {}
+    return {binding_key(side, g): it.key for (side, g), it in table.items()}
+
+
+def current_single_preset() -> str:
+    """
+    现在生效的单手表**更像**哪套预设。
+
+    判据是"命中多少个动作"而不是"是否完全相等"：用户可能只改了其中一条，
+    这时仍应高亮原来那套（他只微调，没换赛道）。完全不像任何一套时返回 ""，
+    界面上两个按钮都不选中 —— 诚实地说"这是自定义"。
+    """
+    cur = current_bindings()
+    best, best_hit = "", -1
+    for name in SINGLE_PRESETS:
+        rows = preset_bindings(name)
+        hit = sum(1 for k, v in rows.items() if cur.get(k) == v)
+        if hit > best_hit:
+            best, best_hit = name, hit
+    # 至少命中一半才算"这套预设"，否则就是用户自己配的
+    return best if best_hit * 2 >= len(_PRESET_TABLES[best]) else ""
 
 
 def apply_bindings(overrides: Optional[Dict[str, str]]) -> None:

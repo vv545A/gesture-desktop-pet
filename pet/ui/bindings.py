@@ -34,14 +34,14 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QGridLayout, QHBoxLayout,
 from ..core.events import PetSay
 from ..intent import mapping
 
-# 下拉框的分组顺序：先桌宠互动（现在的手势主线），再窗口，最后媒体/键盘。
+# 下拉框的分组顺序：先窗口（默认主线），再桌宠互动，最后媒体/键盘。
 # 顺序本身就是一种引导 —— 用户改单手手势时，最可能想选的就在最上面。
-# 窗口操作没删，只是退到第二组：它仍然可以绑回单手，只是不再是默认玩法。
+# 桌宠互动没删，只是退到第二组：它仍然可以整张表切过去，只是不是默认玩法。
 _ORDER = (
-    "pet:dance", "pet:sleep", "pet:wake", "pet:follow", "pet:pat",
-    "open_browser",
     "win_max", "win_min", "win_topmost", "win_snap_left", "win_snap_right",
     "win_desktop",
+    "pet:dance", "pet:sleep", "pet:wake", "pet:follow", "pet:pat",
+    "open_browser",
     "play_pause", "mute", "vol_up", "vol_down", "next_track", "prev_track",
     "alt_tab", "page_down", "page_up",
     "escape", "space", "enter", "scroll_up", "scroll_down",
@@ -86,6 +86,14 @@ QPushButton#primary {
     background: #4D6BFE; border: 1px solid #4D6BFE; color: #FFFFFF; font-weight: 600;
 }
 QPushButton#primary:hover { background: #3F5CEC; }
+QPushButton#preset {
+    background: #FFFFFF; border: 1px solid #D8E0F0; color: #5A6683;
+    padding: 4px 14px; border-radius: 13px; font-size: 12px;
+}
+QPushButton#preset:hover { border-color: #A9B8E0; color: #3D4A6B; }
+QPushButton#preset:checked {
+    background: #E8EEFF; border: 1px solid #4D6BFE; color: #3350E0; font-weight: 600;
+}
 """
 
 
@@ -149,7 +157,7 @@ class BindingsDialog(QDialog):
         root.addWidget(hint)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_single(), "单手 · 桌宠")
+        tabs.addTab(self._build_single(), "单手 · 窗口/桌宠")
         tabs.addTab(self._build_pair(), "双手 · 音乐")
         root.addWidget(tabs, 1)
 
@@ -189,8 +197,29 @@ class BindingsDialog(QDialog):
 
     def _build_single(self) -> QWidget:
         page = QWidget()
-        grid = QGridLayout(page)
-        grid.setContentsMargins(14, 12, 14, 12)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(9)
+
+        # 整表切换：单手有 14 个格子，逐个点下拉框换"玩法"是纯体力活。
+        # 这两个按钮就是"两条路"的入口 —— 点一下整套换掉，立刻生效。
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        cap = QLabel("单手整表：")
+        cap.setObjectName("head")
+        bar.addWidget(cap)
+        self._preset_btns: Dict[str, QPushButton] = {}
+        for name in mapping.SINGLE_PRESETS:
+            b = QPushButton(mapping.SINGLE_PRESET_LABEL.get(name, name))
+            b.setObjectName("preset")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _c=False, n=name: self._apply_preset(n))
+            bar.addWidget(b)
+            self._preset_btns[name] = b
+        bar.addStretch(1)
+        outer.addLayout(bar)
+
+        grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(7)
 
@@ -210,7 +239,8 @@ class BindingsDialog(QDialog):
 
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(2, 1)
-        grid.setRowStretch(len(mapping.SINGLE_GESTURES) + 1, 1)
+        outer.addLayout(grid)
+        outer.addStretch(1)
         return page
 
     def _build_pair(self) -> QWidget:
@@ -264,6 +294,42 @@ class BindingsDialog(QDialog):
         for key, cb in self._combos.items():
             idx = cb.findData(cur.get(key, ""))
             cb.setCurrentIndex(idx if idx >= 0 else 0)
+        self._sync_preset_buttons()
+
+    def _sync_preset_buttons(self) -> None:
+        """
+        高亮"现在用的是哪套预设"。
+
+        用"命中过半"判断而不是逐字比对（见 mapping.current_single_preset）：
+        用户改了一条就整套都不高亮，会让人以为自己把表搞坏了。
+        """
+        cur = mapping.current_single_preset()
+        for name, btn in getattr(self, "_preset_btns", {}).items():
+            btn.setChecked(name == cur)
+
+    def _apply_preset(self, name: str) -> None:
+        """
+        整套换掉单手表，并**立刻生效**（不用再点保存）。
+
+        为什么不等"保存"：预设按钮的语义是"我现在换一种玩法"，
+        换完还要再点一次保存，中间那段时间界面和实际行为是不一致的——
+        用户比个 ✊，看到的还是旧动作。宁可多存一次盘。
+        """
+        rows = mapping.preset_bindings(name)
+        if not rows:
+            return
+        for key, action in rows.items():
+            cb = self._combos.get(key)
+            if cb is None:
+                continue
+            idx = cb.findData(action)
+            if idx >= 0:
+                cb.setCurrentIndex(idx)
+        self._apply(self._collect())
+        self._sync_preset_buttons()
+        label = mapping.SINGLE_PRESET_LABEL.get(name, name)
+        text = "好，单手都改成操作窗口啦" if name == "window" else "好，单手陪你玩～"
+        self.bus.post(PetSay(text=f"{text}（{label}）", mood="happy", anim="nod"))
 
     def _collect(self) -> Dict[str, str]:
         return {key: (cb.currentData() or "") for key, cb in self._combos.items()}

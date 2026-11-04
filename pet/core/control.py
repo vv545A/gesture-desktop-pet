@@ -135,17 +135,38 @@ class ControlCenter:
 
         没有感知线程（--demo、--headless、摄像头起不来）时**明确说一句**，
         而不是静默失败——点菜单没反应是最让人恼火的一种交互。
+
+        注意"开摄像头"和"说三秒后出拳"的先后：如果识别本来是关着的，
+        摄像头的打开是异步的，几秒内根本不会有画面。这时先说"正在开摄像头"
+        才是真话；一上来就喊"三秒后出拳"，用户会盯着一个不出拳的宠物干等。
         """
         if self.worker is None or not hasattr(self.worker, "set_game"):
             self.bus.post(PetSay(text="得先有摄像头才能玩哦", mood="shy"))
             return False
+        was_looking = self.enabled
         if on:
             self._ensure_looking("跟我玩石头剪刀布")
         ok = self.worker.set_game(on)
-        self.bus.post(PetSay(text="三秒后出拳！✊石头 ✌️剪刀 ✋布" if ok else "不玩啦～",
-                             mood="happy" if ok else "calm"))
+        if not on:
+            # 关闭和开启必须分开判：worker.set_game(False) 也会返回 True，
+            # 用 "not ok" 去兜会让"不玩了"被说成"三秒后出拳"。
+            self.bus.post(PetSay(text="不玩啦～", mood="calm"))
+        elif not ok:
+            self.bus.post(PetSay(text="游戏没起来，先看看摄像头是不是被占着",
+                                 mood="surprised"))
+        elif not was_looking:
+            self.bus.post(PetSay(text="摄像头起来了就开始倒数，先把 ✊ ✌️ ✋ 准备好",
+                                 mood="happy"))
+        else:
+            self.bus.post(PetSay(text="三秒后出拳！✊石头 ✌️剪刀 ✋布", mood="happy"))
         return ok
 
     def toggle_game(self) -> bool:
-        playing = getattr(getattr(self.worker, "game", None), "active", False)
+        """
+        切换游戏。`_game_pending` 也算"在玩"：刚点开时 game.active 还是 False，
+        只看 active 的话，连点两下会变成"再开一次"，永远关不掉。
+        """
+        worker = self.worker
+        playing = bool(getattr(getattr(worker, "game", None), "active", False)) \
+            or bool(getattr(worker, "_game_pending", False))
         return self.set_game(not playing)
