@@ -1,25 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-桌宠左键单击弹出的「圆形按键组」—— 三个圆圈，摆在宠物侧面。
+桌宠左键单击弹出的「圆形按键组」—— 三个圆，摆在宠物身侧。
 
 为什么要多这一层（以前是点一下直接弹控制面板）：
     控制面板有 8 行、十几项。可用户点桌宠时想要的通常只有两件事之一：
     "我要调设置" 或者 "我要换个玩法"。为这两种意图各弹一个十几行的
-    面板，等于每次都让人在一张表里找路。
-    现在先用三个圆按钮把意图分一次流：
+    面板，等于每次都让人在一张表里找路。先用三个圆把意图分一次流：
         ⚙ 设置 -> 才打开原来那张控制面板
-        ♥ 互动 -> 单手手势整套切成"逗桌宠"
-        ▣ 操作 -> 单手手势整套切成"操作窗口"
-    圆形 + 单个图标，是因为这三个键要能被"看一眼就认出"，而不是读字；
-    名称放在悬停时才出现的胶囊里（鼠标放上去才显示），不占地方。
+        🐾 互动 -> 单手手势整套切成"逗桌宠"
+        ▭ 操作 -> 单手手势整套切成"操作窗口"
+
+视觉（和立绘对齐，色值见 ui/theme.py）
+    圆按钮做成**奶油糖**：米白径向渐变（左上高光、右下压暗）+ 一圈暖棕细边，
+    阴影也是暖棕的。原来那版是白底 + 深蓝描边，那套蓝是给旧形象（蓝发鲸鱼娘）
+    配的，落在粉发女孩旁边像另一个软件。
+    悬停/选中时，圆染上该按钮自己的浅色：设置配薄荷（她的开衫）、互动配粉
+    （腮红与发色）、操作配裙蓝。三种浅色都从她身上取，所以三个圆放一起是
+    "一套"，不是三色随机。
+    图标一律**矢量线稿**，不用 emoji：emoji 的颜色由字体决定，⚙ 是单色字形、
+    🎮 是彩色位图，三个圆里会同时出现两种画风；而且换个系统就换一张脸。
+    线稿用墨色 #5D403A —— 和立绘的暖棕描边同族，缩小到 19px 也不会糊。
+
+交互
+    悬停：圆上浮 1.6px、底色转成该按钮的浅色、边框转深、旁边滑出名称胶囊。
+    按下：缩 0.8px，像按进去一点。
+    选中（当前正在用的那套玩法）：浅色底 + 2.2px 深色边 + 外圈一道淡光环。
+    入场：三个圆依次弹出（各差 55ms，整体 240ms），从宠物那一侧"长"出来。
 
 实现要点
     Qt.Popup        —— 点外面自动收，不用监听全局点击。
     弧线排布        —— 三个圆落在以宠物中心为圆心的圆弧上，朝左或朝右
-                       （哪边有地方朝哪边），这样菜单永远在宠物"身侧"，
-                       不会盖住它本身。
-    名称在弧外侧    —— 胶囊竖着摆在整条弧的外面一列，不挂在圆下面；
-                       挂在下面必然和最邻近的那个圆打架。
+                       （哪边有地方朝哪边），菜单永远在宠物"身侧"，不盖住它。
+    名称在弧外侧    —— 胶囊竖着摆在整条弧外面一列；挂在圆下面必然和相邻的圆打架。
     不存状态        —— 当前是哪套手势，每次显示时从 mapping 现问，
                        所以从对照表里改过之后，这里的高亮也是对的。
 """
@@ -27,77 +39,43 @@
 from __future__ import annotations
 
 import math
-import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetrics,
-                           QPainter, QPainterPath, QPen)
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation
+from PySide6.QtGui import (QColor, QFontMetrics, QPainter, QPainterPath, QPen,
+                           QRadialGradient)
 from PySide6.QtWidgets import QWidget
 
+from . import theme
 from .paint import ui_font
-
-# 配色沿用桌宠/面板那一套（DeepSeek 蓝 + 浅色卡片），不引入 QSS：
-# QSS 在透明窗口上会把圆角画成方的。
-CARD = QColor(252, 253, 255, 244)
-BORDER = QColor(208, 217, 232, 255)
-TEXT = QColor(38, 48, 70)
-TEXT_ON = QColor(255, 255, 255)
-ACCENT = QColor(77, 107, 254)
-ACCENT_SOFT = QColor(232, 238, 255, 250)
-SHADOW = QColor(30, 42, 70, 26)
 
 D = 46              # 圆的直径
 R = 92              # 弧半径（宠物中心 -> 圆心）
 SPREAD = 40.0       # 三个圆之间各差多少度
-PAD = 10            # 给高亮环/阴影留的边
-PILL_W = 58         # 悬停名称胶囊的宽（竖着摆在弧外侧，所以留固定一列）
+PAD = 13            # 给阴影 / 选中光环留的边
 PILL_H = 22
+PILL_MIN_W = 48.0
 
-#: (key, 表情, 名称)。顺序 = 从弧顶到弧底。
+#: 每个按钮自己的强调色 (浅底, 深描边)。三色都取自她身上：开衫 / 腮红 / 裙子。
+_ACCENT: Dict[str, Tuple[QColor, QColor]] = {
+    "settings": (theme.MINT_TINT, theme.MINT_DEEP),
+    "pet": (theme.PINK_TINT, theme.PINK_DEEP),
+    "window": (theme.BLUE_TINT, theme.BLUE_DEEP),
+}
+
+#: (key, 图标, 名称)。顺序 = 从弧顶到弧底。
 _ITEMS: Tuple[Tuple[str, str, str], ...] = (
-    ("settings", "⚙", "设置"),
-    ("pet", "🎮", "互动"),
-    ("window", "🖥", "操作"),
+    ("settings", "gear", "设置"),
+    ("pet", "paw", "互动"),
+    ("window", "frame", "操作"),
 )
 
-# 表情字体只注册一次。不注册就得赌系统里"Segoe UI Emoji"能被按家族名查到——
-# 在离屏渲染/精简系统上查不到（families() 直接是 0），表情会变成一排方框。
-_EMOJI_FAMILY: Optional[str] = None
-_EMOJI_TRIED = False
+_APPEAR_MS = 240        # 入场总时长
+_STAGGER = 0.55         # 三个圆依次延迟多少（占整段的比例）
 
 
-def _emoji_font(size: int) -> Optional[QFont]:
-    """
-    取能画彩色表情的字体；取不到就返回 None，调用方改画矢量图标。
-
-    为什么要有矢量兜底：表情是"锦上添花"，但按钮不能因为它没了就变成
-    三个空圈——那比不画图标更糟（用户完全看不出哪个是设置）。
-    """
-    global _EMOJI_FAMILY, _EMOJI_TRIED
-    if not _EMOJI_TRIED:
-        _EMOJI_TRIED = True
-        for path in (r"C:\Windows\Fonts\seguiemj.ttf",
-                     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-                     "/System/Library/Fonts/Apple Color Emoji.ttc"):
-            if not os.path.exists(path):
-                continue
-            fid = QFontDatabase.addApplicationFont(path)
-            if fid < 0:
-                continue
-            fams = QFontDatabase.applicationFontFamilies(fid)
-            if fams:
-                _EMOJI_FAMILY = fams[0]
-                break
-
-    if not _EMOJI_FAMILY:
-        return None
-    f = QFont(_EMOJI_FAMILY)
-    f.setPointSize(size)
-    # 字体在、但缺这个字形（比如只有黑白符号）时不硬用，交给矢量兜底
-    if not QFontMetrics(f).inFontUcs4(ord(_ITEMS[0][1])):
-        return None
-    return f
+def _rgba(c: QColor, a: int) -> QColor:
+    return QColor(c.red(), c.green(), c.blue(), a)
 
 
 class OrbitMenu(QWidget):
@@ -113,13 +91,21 @@ class OrbitMenu(QWidget):
         self.setWindowTitle("快捷按键")
 
         self._font_name = ui_font(9, bold=True)
-        self._font_icon = _emoji_font(15)
         self._hover = ""
         self._press = ""
         self._side = "left"
         self._centers: List[Tuple[str, str, str, QPointF]] = []
         self._origin = QPointF()
+        self._pill_w = PILL_MIN_W
+        self._appear = 1.0            # 入场进度 0~1（1 = 完全展开）
         self._build("left")
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(_APPEAR_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_appear)
 
     # ---------------------------------------------------------------- 布局
     def _angles(self, side: str) -> Tuple[float, ...]:
@@ -134,6 +120,13 @@ class OrbitMenu(QWidget):
     def _build(self, side: str) -> None:
         """按方向算三个圆心，并把整个控件裁到刚好包住它们 + 名称那一列。"""
         self._side = side
+
+        # 名称胶囊的宽度按最长的名字量，而不是写死 —— 换成两个字以外的名字
+        # （或用户系统字体偏宽）时不会把字挤掉。
+        fm = QFontMetrics(self._font_name)
+        self._pill_w = max(PILL_MIN_W,
+                           max(fm.horizontalAdvance(n) for _k, _i, n in _ITEMS) + 22)
+
         raw = []
         for (key, icon, name), deg in zip(_ITEMS, self._angles(side)):
             rad = math.radians(deg)
@@ -146,29 +139,22 @@ class OrbitMenu(QWidget):
         miny = min(c.y() for _, _, _, c in raw) - pad
         maxy = max(c.y() for _, _, _, c in raw) + pad
 
-        # 名称胶囊固定占弧外侧一列，所以那一侧的边界要再放宽 PILL_W
+        # 名称胶囊固定占弧外侧一列，所以那一侧的边界要再放宽
         if side == "left":
-            minx -= PILL_W + 8
+            minx -= self._pill_w + 8
         else:
-            maxx += PILL_W + 8
+            maxx += self._pill_w + 8
 
         w = int(maxx - minx)
         h = int(maxy - miny)
         self.resize(max(w, 40), max(h, 40))
 
-        dx = -minx
-        dy = -miny
+        dx, dy = -minx, -miny
         self._centers = [(k, i, n, QPointF(c.x() + dx, c.y() + dy))
                          for k, i, n, c in raw]
         # 宠物中心（弧的圆心）在本地坐标里的位置。它落在控件外或边缘都
         # 正常 —— 弧是往一侧弯的，圆心自然在那一侧的外面。
         self._origin = QPointF(dx, dy)
-
-        # 名称列：整条弧外侧的竖条
-        if side == "left":
-            self._pill_x = 2.0
-        else:
-            self._pill_x = self.width() - PILL_W - 2.0
 
     # ---------------------------------------------------------------- 弹出
     def popup_near(self, anchor) -> None:
@@ -186,7 +172,7 @@ class OrbitMenu(QWidget):
             cy = int(pos.y() + anchor.pet_cy)
 
         # 弧从宠物中心往一侧伸出去的距离（含圆的半径和名称列）
-        reach = R + D / 2 + PAD + PILL_W + 8
+        reach = R + D / 2 + PAD + self._pill_w + 8
 
         side = "left"
         if area is not None and cx - reach < area.left():
@@ -213,6 +199,17 @@ class OrbitMenu(QWidget):
         """让弧的圆心（宠物中心）落在 (cx, cy) 上。"""
         return (int(cx - self._origin.x()), int(cy - self._origin.y()))
 
+    # ---------------------------------------------------------------- 入场动画
+    def showEvent(self, ev) -> None:  # noqa: N802
+        super().showEvent(ev)
+        self._appear = 0.0
+        self._anim.stop()
+        self._anim.start()
+
+    def _on_appear(self, value) -> None:
+        self._appear = float(value)
+        self.update()
+
     # ---------------------------------------------------------------- 命中
     def _hit(self, pos: QPointF) -> str:
         for key, _i, _n, c in self._centers:
@@ -227,110 +224,196 @@ class OrbitMenu(QWidget):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         active = self._active_preset()
-        for key, icon, name, c in self._centers:
+        for i, (key, icon, _name, c) in enumerate(self._centers):
+            # 依次弹出：第 i 个的进度 = 整体进度往前挪一小段
+            t = (self._appear - i * _STAGGER / len(self._centers)) / (
+                1.0 - _STAGGER * (len(self._centers) - 1) / len(self._centers))
+            t = max(0.0, min(1.0, t))
+            if t <= 0.01:
+                continue
             hot = key == self._hover
             pressed = key == self._press and hot
             self._paint_circle(p, c, key, icon,
-                               on=key == active, hot=hot, pressed=pressed)
+                               on=key == active, hot=hot, pressed=pressed, t=t)
 
         # 名称胶囊：只在悬停时出现，摆在弧外侧那一列
         if self._hover:
             for key, _i, name, c in self._centers:
                 if key == self._hover:
-                    self._paint_pill(p, c, name)
+                    self._paint_pill(p, c, name, key)
                     break
         p.end()
 
     def _paint_circle(self, p: QPainter, c: QPointF, key: str, icon: str,
-                      on: bool, hot: bool, pressed: bool) -> None:
-        r = D / 2 - (1.0 if pressed else 0.0)
+                      on: bool, hot: bool, pressed: bool, t: float) -> None:
+        lit = hot or on                          # 有没有"上色"
+        bg, deep = _ACCENT[key]                  # 该按钮的浅底 / 深描边
 
-        # 阴影压在下沿，让圆"浮"在壁纸上，不至于像一张贴纸
+        p.save()
+        p.setOpacity(t)
+        # 从宠物那一侧朝外长出来：起点朝圆心收 9px，边长大边归位
+        k = 0.82 + 0.18 * t
+        p.translate(c.x() + (self._origin.x() - c.x()) * (1.0 - t) * 0.14,
+                    c.y() + (self._origin.y() - c.y()) * (1.0 - t) * 0.14)
+        p.scale(k, k)
+        p.translate(-c.x(), -c.y())
+
+        cx = c.x()
+        cy = c.y() - (1.6 if lit else 0.0) - (0.8 if pressed else 0.0)
+        r = D / 2 - (0.6 if pressed else 0.0)
+        ctr = QPointF(cx, cy)
+
+        # 阴影：三层暖棕，越靠下越淡（比 QGraphicsDropShadowEffect 稳，
+        # 那种 effect 加在透明顶层窗口上时某些驱动会整块变黑底）
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(SHADOW)
-        p.drawEllipse(QPointF(c.x(), c.y() + 2.0), r, r)
+        for dy, a in ((5.0, 9), (3.4, 13), (2.0, 18)):
+            p.setBrush(theme.shadow(a))
+            p.drawEllipse(QPointF(cx, cy + dy), r - 1.2, r - 1.2)
 
+        # 选中：外圈一道淡光环，和"悬停"区分开（悬停只有描边变深）
         if on:
-            p.setBrush(ACCENT_SOFT)
-        elif hot:
-            p.setBrush(QColor(245, 248, 255, 250))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(_rgba(deep, 105), 1.6))
+            p.drawEllipse(ctr, r + 4.2, r + 4.2)
+
+        # 底：左上亮、右下暗的径向渐变，看起来像一颗有体积的奶油糖
+        g = QRadialGradient(QPointF(cx - r * 0.38, cy - r * 0.52), r * 1.9)
+        if lit:
+            g.setColorAt(0.0, theme.tint(bg, 0.62))
+            g.setColorAt(1.0, bg)
         else:
-            p.setBrush(CARD)
-        p.setPen(QPen(ACCENT if (on or hot) else BORDER, 2.0 if hot else 1.0))
-        p.drawEllipse(c, r, r)
+            g.setColorAt(0.0, theme.CREAM_HI)
+            g.setColorAt(1.0, theme.CREAM_LO)
+        p.setBrush(g)
+        p.setPen(QPen(deep if lit else theme.LINE,
+                      2.2 if on else (1.8 if hot else 1.3)))
+        p.drawEllipse(ctr, r, r)
 
-        if self._font_icon is not None:
-            p.setFont(self._font_icon)
-            p.setPen(QPen(TEXT))
-            # 字形视觉重心偏下，上抬 1px 才不会看着掉出圆外
-            box = QRectF(c.x() - r, c.y() - r - 1, r * 2, r * 2)
-            p.drawText(box, int(Qt.AlignmentFlag.AlignCenter), icon)
-        else:
-            self._paint_vector_icon(p, c, key)
+        # 顶部一道很淡的高光弧：奶油糖的"釉面"，也是勾边的收尾
+        if not pressed:
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 185 if lit else 140), 1.4,
+                          Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(cx - r * 0.62, cy - r * 0.78, r * 1.24, r * 1.24),
+                      int(38 * 16), int(104 * 16))
 
-    def _paint_vector_icon(self, p: QPainter, c: QPointF, key: str) -> None:
+        self._paint_icon(p, cx, cy, icon, deep if lit else theme.INK,
+                         theme.tint(bg, 0.75) if lit else theme.CREAM_HI)
+        p.restore()
+
+    # ---------------------------------------------------------------- 图标
+    def _paint_icon(self, p: QPainter, cx: float, cy: float, icon: str,
+                    col: QColor, fill: QColor) -> None:
         """
-        没有彩色表情字体时的兜底图标 —— 全部用路径画，不依赖任何字形。
+        三个图标全部用路径画，不依赖任何字体。
 
-        三个形状各自对应一个语义，隔着屏幕也能认出来：
-            设置 = 三条推子（粗细不等，带滑块）
-            互动 = 一颗心
-            操作 = 两个叠起来的窗口
+        为什么不用 emoji：同一个系统的字体里 ⚙ 可能是单色字形、🎮 却是彩色位图，
+        三个圆里会同时出现两种画风；换台机器还会变样。线稿图标在哪儿都一样，
+        而且能和立绘的暖棕描边对上。
         """
-        s = D * 0.26                      # 图标半尺寸
-        col = ACCENT
-        pen = QPen(col, 2.0)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen = QPen(col, 1.7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                   Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        if key == "settings":
-            for i, dy in enumerate((-s * 0.72, 0.0, s * 0.72)):
-                y = c.y() + dy
-                p.drawLine(QPointF(c.x() - s, y), QPointF(c.x() + s, y))
-                # 滑块位置错开，才像"在调"，不是三条横线
-                kx = c.x() + (-s * 0.35 if i == 0 else (s * 0.4 if i == 1
-                                                        else -s * 0.05))
-                p.setBrush(QColor(255, 255, 255))
-                p.drawEllipse(QPointF(kx, y), 3.2, 3.2)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-        elif key == "pet":
-            path = QPainterPath()
-            top = c.y() - s * 0.75
-            path.moveTo(c.x(), c.y() + s * 0.85)
-            path.cubicTo(c.x() - s * 1.9, c.y() - s * 0.1,
-                         c.x() - s * 0.95, top - s * 0.55,
-                         c.x(), c.y() - s * 0.38)
-            path.cubicTo(c.x() + s * 0.95, top - s * 0.55,
-                         c.x() + s * 1.9, c.y() - s * 0.1,
-                         c.x(), c.y() + s * 0.85)
-            p.setBrush(col)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawPath(path)
-        else:
-            back = QRectF(c.x() - s * 0.55, c.y() - s * 0.95, s * 1.5, s * 1.15)
-            front = QRectF(c.x() - s * 0.95, c.y() - s * 0.2, s * 1.5, s * 1.15)
-            p.setBrush(QColor(255, 255, 255))
-            p.drawRoundedRect(back, 2.5, 2.5)
-            p.setBrush(ACCENT_SOFT)
-            p.drawRoundedRect(front, 2.5, 2.5)
+        if icon == "gear":
+            # 齿：八条短粗线（圆头），比抠一整圈齿轮路径省事，缩小也不糊。
+            # 内环要**厚、齿要短**：细环长齿在 19px 上会读成"太阳"。
+            p.setPen(QPen(col, 2.2, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap))
+            for i in range(8):
+                a = math.radians(i * 45.0 + 22.5)
+                p.drawLine(QPointF(cx + math.cos(a) * 6.2, cy + math.sin(a) * 6.2),
+                           QPointF(cx + math.cos(a) * 8.2, cy + math.sin(a) * 8.2))
+            p.setPen(QPen(col, 2.6, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap))
+            p.drawEllipse(QPointF(cx, cy), 5.6, 5.6)
 
-    def _paint_pill(self, p: QPainter, c: QPointF, name: str) -> None:
-        p.setFont(self._font_name)
-        x = self._pill_x
-        y = c.y() - PILL_H / 2
-        y = max(1.0, min(y, self.height() - PILL_H - 1.0))
+        elif icon == "paw":
+            # 猫爪：她帽子上就绣着一枚，是这套界面里最好用的"品牌记号"。
+            # **只画三颗趾**：在 19px 上，四颗趾会横向挤成一条"眉毛"，
+            # 整枚读成表情符号；三颗中间留白，才是爪印。
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(col)
+            p.drawEllipse(QPointF(cx, cy + 3.2), 4.3, 3.3)
+            for dx, dy in ((-3.8, -2.4), (0.0, -4.6), (3.8, -2.4)):
+                p.drawEllipse(QPointF(cx + dx, cy + dy), 2.05, 2.15)
+
+        else:                                    # frame：两个叠起来的窗口
+            # 偏移必须**同时**横竖挪同样多，才是"叠起来"；只挪一个方向会读成"8"。
+            front = QRectF(cx - 8.0, cy - 1.2, 10.2, 8.0)
+            back = front.translated(3.5, -3.6)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(back, 2.0, 2.0)
+            p.setBrush(fill)                     # 前面那块要挡住后面，才读得出"两个"
+            p.drawRoundedRect(front, 2.0, 2.0)
+            # 顶上一道实心标题栏：没有它，两个圆角方块只是"复制"图标，
+            # 有它才一眼是"窗口"（19px 下这是唯一还认得出的窗口特征）
+            p.save()
+            clip = QPainterPath()
+            clip.addRoundedRect(front, 2.0, 2.0)
+            p.setClipPath(clip)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(col)
+            p.drawRect(QRectF(front.left(), front.top(), front.width(), 2.6))
+            p.restore()
+
+    # ---------------------------------------------------------------- 名称
+    def _paint_pill(self, p: QPainter, c: QPointF, name: str, key: str) -> None:
+        """
+        悬停名称：奶油色药丸 + 一颗该按钮的深色小点 + 指向圆心的尾巴。
+
+        横向位置**贴着当前这颗圆算**，不放在固定的那一列：弧是弯的，上下两个圆
+        比中间那个靠里 21px，固定列会让胶囊离圆忽远忽近，尾巴够不着。
+        """
+        _bg, deep = _ACCENT[key]
+        w = self._pill_w
+        gap = 6.0      # 和尾巴一样长 -> 尾尖正好落在圆边上，读作"从圆里长出来"
+        if self._side == "left":
+            x = c.x() - D / 2 - gap - w
+        else:
+            x = c.x() + D / 2 + gap
+        x = max(1.0, min(x, self.width() - w - 1.0))
+        y = max(1.0, min(c.y() - PILL_H / 2, self.height() - PILL_H - 1.0))
+        rect = QRectF(x, y, w, PILL_H)
+        cy = max(rect.top() + 5.5, min(c.y(), rect.bottom() - 5.5))
+
+        # 尾巴先画：它要被药丸本体压住一半，看着才是"长出来"的
+        to_right = self._side == "left"
+        edge = rect.right() if to_right else rect.left()
+        tip_x = edge + (6.0 if to_right else -6.0)
+        tail = QPainterPath()
+        tail.moveTo(edge, cy - 3.6)
+        tail.lineTo(tip_x, cy)
+        tail.lineTo(edge, cy + 3.6)
+        tail.closeSubpath()
+        p.setPen(QPen(theme.LINE, 1.0, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(theme.CREAM)
+        p.drawPath(tail)
 
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(38, 48, 70, 236))
-        p.drawRoundedRect(QRectF(x, y, PILL_W, PILL_H), PILL_H / 2, PILL_H / 2)
-        p.setPen(QPen(TEXT_ON))
-        p.drawText(QRectF(x, y, PILL_W, PILL_H),
-                   int(Qt.AlignmentFlag.AlignCenter), name)
+        p.setBrush(theme.shadow(20))
+        p.drawRoundedRect(rect.adjusted(0, 1.4, 0, 2.2), PILL_H / 2, PILL_H / 2)
+        p.setBrush(theme.CREAM)
+        p.setPen(QPen(theme.LINE, 1.0))
+        p.drawRoundedRect(rect, PILL_H / 2, PILL_H / 2)
+
+        # 左侧小点：和圆的强调色呼应，一眼知道说的是哪一个
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(deep)
+        dot_x = rect.left() + 10.5
+        p.drawEllipse(QPointF(dot_x, rect.center().y()), 2.6, 2.6)
+
+        p.setPen(theme.INK)
+        p.setFont(self._font_name)
+        p.drawText(QRectF(dot_x + 6.5, rect.y(), w - 22, PILL_H),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   name)
 
     # ---------------------------------------------------------------- 状态
     def _active_preset(self) -> str:
-        """现在单手是哪套玩法 —— 用来给对应的圆加高亮环。"""
+        """现在单手是哪套玩法 —— 用来给对应的圆加高亮。"""
         try:
             from ..intent import mapping
             return mapping.current_single_preset()

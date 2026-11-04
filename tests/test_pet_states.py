@@ -401,6 +401,29 @@ check("三个键分别是 设置 / 互动 / 操作",
 check("每个圆都带一个图标",
       all(i for _k, i, _n, _c in win3._orbit._centers))
 
+# 视觉上的三条硬约束（都是踩过的坑）：图标要真能画出来、名称不能被裁、
+# 入场动画要能走完（走不完就是一排空白圆，截图/用户都会以为坏了）
+from PySide6.QtGui import QFontMetrics                           # noqa: E402
+
+# 截图前先把入场动画推到终态：动画停在第 0 帧时本来就是一排空白圆
+win3._orbit._anim.stop()
+win3._orbit._appear = 1.0
+_img = win3._orbit.grab().toImage()
+_c = win3._orbit._centers[1][3]
+check("三个圆真的画出来了（不是一张空白图）",
+      _img.width() > 0 and _img.pixelColor(int(_c.x()), int(_c.y())).alpha() > 0)
+_fm = QFontMetrics(win3._orbit._font_name)
+check(f"名称胶囊放得下最长的名字（袋宽 {win3._orbit._pill_w:.0f}px）",
+      win3._orbit._pill_w >= max(_fm.horizontalAdvance(n)
+                                 for _k, _i, n, _c in win3._orbit._centers) + 12)
+win3._orbit._appear = 0.0
+win3._orbit.showEvent(None)
+check("弹出时入场动画从 0 开始播",
+      win3._orbit._appear < 0.5 and win3._orbit._anim.state()
+      == win3._orbit._anim.State.Running)
+win3._orbit._anim.stop()
+win3._orbit._appear = 1.0
+
 # 圆按钮的几何：三个圆不该压到宠物身上（压上去点不到宠物，
 # 看着也像贴错位置的贴纸）
 _ox, _oy = win3._orbit._origin.x(), win3._orbit._origin.y()

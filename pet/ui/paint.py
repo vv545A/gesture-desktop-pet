@@ -614,7 +614,7 @@ def draw_pet(p: QPainter, cx: float, cy: float, w: float, h: float,
 
 
 def draw_aura(p: QPainter, cx: float, cy: float, w: float, h: float,
-              aura: float) -> None:
+              aura: float, color: QColor | None = None) -> None:
     """
     悬停进度环。画在最外层、不随身体旋转，贴图版和矢量版共用。
 
@@ -628,9 +628,9 @@ def draw_aura(p: QPainter, cx: float, cy: float, w: float, h: float,
     rx, ry = w * 0.52 + 2, h * 0.54 + 2
     rect = QRectF(cx - rx, cy - ry, rx * 2, ry * 2)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.setPen(QPen(QColor(58, 88, 120, 55), max(2.0, ry * 0.028)))
+    p.setPen(QPen(QColor(120, 92, 84, 55), max(2.0, ry * 0.028)))
     p.drawArc(rect, 0, 360 * 16)
-    p.setPen(QPen(ACCENT, max(2.4, ry * 0.034), Qt.PenStyle.SolidLine,
+    p.setPen(QPen(color or ACCENT, max(2.4, ry * 0.034), Qt.PenStyle.SolidLine,
                   Qt.PenCapStyle.RoundCap))
     p.drawArc(rect, int(90 * 16), int(-360 * 16 * min(1.0, aura)))
     p.restore()
@@ -647,7 +647,7 @@ def draw_bubble(p: QPainter, rect: QRectF, text: str, alpha: float,
     a = int(235 * alpha)
 
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(QColor(255, 255, 255, a)))
+    p.setBrush(QBrush(QColor(255, 252, 246, a)))     # 奶油纸，不是纯白：和界面同族
     path = QPainterPath()
     radius = min(rect.height() / 2, 14.0)
     path.addRoundedRect(rect, radius, radius)
@@ -661,11 +661,11 @@ def draw_bubble(p: QPainter, rect: QRectF, text: str, alpha: float,
     tail.closeSubpath()
     p.drawPath(path.united(tail))
 
-    p.setPen(QPen(QColor(30, 70, 80, a), 1.2))
+    p.setPen(QPen(QColor(226, 203, 192, a), 1.2))   # 暖灰描边（theme.LINE）
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawPath(path.united(tail))
 
-    p.setPen(QPen(QColor(26, 52, 60, min(255, int(255 * alpha)))))
+    p.setPen(QPen(QColor(93, 64, 58, min(255, int(255 * alpha)))))   # theme.INK
     p.setFont(font)
     p.drawText(rect.adjusted(10, 6, -10, -6),
                int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap), text)

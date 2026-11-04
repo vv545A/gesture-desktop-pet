@@ -36,7 +36,7 @@ from ..core.config import Config
 from ..core.events import (ActionDone, ContinuousAction, ControlToggled,
                            EmotionChanged, Event, HandsSeen, PerceptionFailed,
                            PerceptionReady, PetGame, PetSay, PresenceChanged)
-from . import anim
+from . import anim, theme
 from .paint import (PetPose, draw_aura, draw_bubble, draw_glow,
                     draw_mood_fx, draw_pet, draw_shadow, ui_font)
 from .sprite import SpriteSet
@@ -1102,7 +1102,7 @@ class PetWindow(QWidget):
             draw_mood_fx(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
                          self._mood, self._phase)
             draw_aura(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
-                      self._aura)
+                      self._aura, theme.PINK_DEEP)
         else:
             draw_pet(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,
                      self._pose, self._motion)
@@ -1121,12 +1121,12 @@ class PetWindow(QWidget):
         # 两种"不在干活"要区分开：手势被关掉（要告诉用户怎么开回来）和
         # 只是暂时没看到手（待机中）。
         if not self._enabled:
-            p.setPen(QColor(150, 160, 175, 190))
+            p.setPen(QColor(138, 106, 98, 200))
             p.setFont(ui_font(8))
             p.drawText(QRectF(0, self.win_h - 18, self.win_w, 16),
                        int(Qt.AlignmentFlag.AlignHCenter), "手势识别已关闭")
         elif self._mood == "sleepy":
-            p.setPen(QColor(120, 140, 150, 150))
+            p.setPen(QColor(138, 106, 98, 165))
             p.setFont(ui_font(8))
             p.drawText(QRectF(0, self.win_h - 18, self.win_w, 16),
                        int(Qt.AlignmentFlag.AlignHCenter), "待机中")
@@ -1146,7 +1146,7 @@ class PetWindow(QWidget):
         info = self._dock
         if info is None:
             return
-        accent = QColor(77, 107, 254)
+        accent = theme.PINK_DEEP          # 和圆按钮/面板同一个强调色
 
         # 标签：夹在左边和右上角关闭键之间，宽度不够就不画（宁缺勿糊）
         x0 = 7.0
@@ -1155,12 +1155,12 @@ class PetWindow(QWidget):
             return
         rect = QRectF(x0, 4.0, x1 - x0, 18.0)
         p.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 95), 1.0))
-        p.setBrush(QColor(255, 255, 255, 210))
+        p.setBrush(QColor(255, 252, 246, 228))
         p.drawRoundedRect(rect, 9, 9)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 235))
         p.drawEllipse(QPointF(x0 + 9.0, rect.center().y()), 3.0, 3.0)
-        p.setPen(QColor(46, 60, 92))
+        p.setPen(theme.INK)
         p.setFont(ui_font(8))
         p.drawText(rect.adjusted(16, 0, -6, 0),
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
@@ -1175,7 +1175,7 @@ class PetWindow(QWidget):
         """
         if not self.cfg.dock_side:
             return
-        accent = QColor(77, 107, 254)
+        accent = theme.PINK_DEEP
         # 边线的本地 x：身体往窗口外让了多少，边线就往里退多少
         reach = self.body_w * (0.5 - _clamp(self.cfg.dock_overlap, 0.0, 0.5))
         seam_x = (self.pet_cx - self.cfg.dock_pad - reach if self._dock_side == "right"
@@ -1196,9 +1196,9 @@ class PetWindow(QWidget):
         hover = self._hover_btn
         p.setPen(Qt.PenStyle.NoPen)
         if self._enabled:
-            p.setBrush(QColor(30, 38, 58, 205 if hover else 135))
+            p.setBrush(theme.shadow(205 if hover else 140))   # 暖棕，不再是冷黑蓝
         else:
-            p.setBrush(QColor(58, 168, 120, 235 if hover else 190))
+            p.setBrush(QColor(108, 150, 122, 235 if hover else 195))
         p.drawEllipse(c, r, r)
 
         if hover:   # 悬停加一圈淡光：让"这里能点"一眼看出来

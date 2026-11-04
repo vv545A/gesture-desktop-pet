@@ -25,17 +25,21 @@ from PySide6.QtWidgets import QWidget
 
 from ..core.bond import LEVELS
 from ..core.events import PetSay
+from . import theme
 from .paint import ui_font
 
-# 配色沿用桌宠的 DeepSeek 蓝，浅色卡片 + 一点点阴影
-CARD = QColor(252, 253, 255, 246)
-BORDER = QColor(208, 217, 232, 255)
-TEXT = QColor(38, 48, 70)
-TEXT_DIM = QColor(128, 140, 160)
-ACCENT = QColor(77, 107, 254)
-TRACK_OFF = QColor(206, 213, 226)
-ROW_HOVER = QColor(240, 244, 252, 255)
-DANGER = QColor(214, 78, 92)
+# 配色全部来自 ui/theme.py（从立绘采样）。以前这里是 DeepSeek 蓝 —— 那套色是
+# 给旧形象（蓝发鲸鱼娘）配的，换成粉发女孩之后，面板冷得像另一个软件。
+CARD = theme.CARD
+BORDER = theme.LINE
+TEXT = theme.INK
+TEXT_DIM = theme.INK_DIM
+ACCENT = theme.PINK_DEEP          # 强调色换成她发色的深调
+TRACK_OFF = theme.TRACK_OFF
+ROW_HOVER = theme.ROW_HOVER
+DANGER = theme.DANGER
+SEG_OFF = QColor(247, 235, 222)   # 没选中的分段 / 次级按钮底（要能和卡片底分开）
+BOND_TRACK = QColor(240, 228, 218)  # 亲密度进度条的底槽
 
 MARGIN = 9          # 给阴影留的边
 PAD = 12
@@ -138,7 +142,7 @@ class ControlPanel(QWidget):
         # （effect 加在透明顶层窗口上时，有的驱动会把整块变成黑底）
         for i, a in ((4, 16), (3, 22), (2, 30)):
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(24, 34, 60, a))
+            p.setBrush(theme.shadow(a))
             p.drawRoundedRect(card.adjusted(-i, -i + 2, i, i + 3), 14 + i, 14 + i)
 
         p.setBrush(CARD)
@@ -165,10 +169,10 @@ class ControlPanel(QWidget):
         # 底部状态：摄像头到底有没有在工作，是用户最关心的一件事
         p.setFont(self._font_small)
         if getattr(self.control, "enabled", True):
-            p.setPen(QColor(108, 150, 122))
+            p.setPen(theme.GOOD)
             note = "摄像头工作中"
         else:
-            p.setPen(QColor(168, 130, 58))
+            p.setPen(theme.WARN)
             note = "摄像头已关闭 · 打开开关恢复"
         p.drawText(self._footer, int(Qt.AlignmentFlag.AlignCenter), note)
         p.end()
@@ -257,7 +261,7 @@ class ControlPanel(QWidget):
         frac = 1.0 if hi <= lo else max(0.0, min(1.0, (b.points - lo) / (hi - lo)))
 
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(232, 237, 247))
+        p.setBrush(BOND_TRACK)
         p.drawRoundedRect(self._bond_bar, 2.5, 2.5)
         if frac > 0:
             fill = QRectF(self._bond_bar)
@@ -277,9 +281,9 @@ class ControlPanel(QWidget):
             if active:
                 p.setBrush(ACCENT)
             elif self._hover == key:
-                p.setBrush(QColor(226, 232, 245))
+                p.setBrush(ROW_HOVER)
             else:
-                p.setBrush(QColor(238, 242, 250))
+                p.setBrush(SEG_OFF)
             p.drawRoundedRect(rect, 7, 7)
             p.setPen(QColor(255, 255, 255) if active else TEXT)
             p.setFont(self._font_small)
@@ -290,7 +294,7 @@ class ControlPanel(QWidget):
     def _paint_button(self, p: QPainter, key: str, rect: QRectF) -> None:
         hover = self._hover == key
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(ROW_HOVER if hover else QColor(243, 246, 252))
+        p.setBrush(ROW_HOVER if hover else SEG_OFF)
         p.drawRoundedRect(rect, 7, 7)
         p.setPen(DANGER if key == "quit" else TEXT)
         p.setFont(self._font)

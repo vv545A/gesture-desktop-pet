@@ -48,23 +48,26 @@ _ORDER = (
 )
 
 _STYLE = """
-QDialog { background: #F6F8FD; }QLabel#title { color: #2A3550; font-size: 15px; font-weight: 600; }
-QLabel#hint  { color: #7C88A0; font-size: 12px; }
-QLabel#row   { color: #39445E; font-size: 13px; }
-QLabel#head  { color: #8B95AC; font-size: 12px; }
-QTabWidget::pane { border: 1px solid #DDE4F1; border-radius: 9px; background: #FFFFFF; top: -1px; }
+/* 颜色全部对齐 ui/theme.py（从立绘采样的暖米白 + 玫瑰粉），
+   和圆按钮 / 控制面板是同一套；以前这里是冷蓝，点进来像换了个软件。 */
+QDialog { background: #FDF7EE; }
+QLabel#title { color: #5D403A; font-size: 15px; font-weight: 600; }
+QLabel#hint  { color: #8A6A62; font-size: 12px; }
+QLabel#row   { color: #5D403A; font-size: 13px; }
+QLabel#head  { color: #8A6A62; font-size: 12px; }
+QTabWidget::pane { border: 1px solid #E2CBC0; border-radius: 9px; background: #FFFCF6; top: -1px; }
 QTabBar::tab {
-    background: transparent; color: #7C88A0; padding: 7px 18px;
+    background: transparent; color: #8A6A62; padding: 7px 18px;
     border: none; font-size: 13px;
 }
-QTabBar::tab:selected { color: #4D6BFE; font-weight: 600; }
-QTabBar::tab:hover { color: #4D6BFE; }
+QTabBar::tab:selected { color: #C4647A; font-weight: 600; }
+QTabBar::tab:hover { color: #C4647A; }
 QComboBox {
-    background: #FFFFFF; border: 1px solid #D3DCEC; border-radius: 6px;
-    padding: 4px 8px; color: #313B54; min-height: 20px; font-size: 13px;
+    background: #FFFCF6; border: 1px solid #E2CBC0; border-radius: 6px;
+    padding: 4px 8px; color: #5D403A; min-height: 20px; font-size: 13px;
 }
-QComboBox:hover { border-color: #A9B8E0; }
-QComboBox:focus { border-color: #4D6BFE; }
+QComboBox:hover { border-color: #D9A9B4; }
+QComboBox:focus { border-color: #C4647A; }
 QComboBox::drop-down {
     width: 18px; border: none;
     subcontrol-origin: padding; subcontrol-position: center right;
@@ -73,26 +76,26 @@ QComboBox::down-arrow {
     image: url("__ARROW__"); width: 14px; height: 14px; margin-right: 4px;
 }
 QComboBox QAbstractItemView {
-    background: #FFFFFF; border: 1px solid #D3DCEC;
-    selection-background-color: #E8EEFF; selection-color: #2A3550;
+    background: #FFFCF6; border: 1px solid #E2CBC0;
+    selection-background-color: #FCE8EA; selection-color: #5D403A;
     outline: none; padding: 2px;
 }
 QPushButton {
-    background: #EEF2FB; border: 1px solid #D8E0F0; border-radius: 7px;
-    color: #39445E; padding: 6px 16px; font-size: 13px;
+    background: #F7EBDE; border: 1px solid #E2CBC0; border-radius: 7px;
+    color: #5D403A; padding: 6px 16px; font-size: 13px;
 }
-QPushButton:hover { background: #E4EBFA; border-color: #B9C6E6; }
+QPushButton:hover { background: #F2E2D2; border-color: #D9A9B4; }
 QPushButton#primary {
-    background: #4D6BFE; border: 1px solid #4D6BFE; color: #FFFFFF; font-weight: 600;
+    background: #C4647A; border: 1px solid #C4647A; color: #FFFFFF; font-weight: 600;
 }
-QPushButton#primary:hover { background: #3F5CEC; }
+QPushButton#primary:hover { background: #B2556B; }
 QPushButton#preset {
-    background: #FFFFFF; border: 1px solid #D8E0F0; color: #5A6683;
+    background: #FFFCF6; border: 1px solid #E2CBC0; color: #8A6A62;
     padding: 4px 14px; border-radius: 13px; font-size: 12px;
 }
-QPushButton#preset:hover { border-color: #A9B8E0; color: #3D4A6B; }
+QPushButton#preset:hover { border-color: #D9A9B4; color: #5D403A; }
 QPushButton#preset:checked {
-    background: #E8EEFF; border: 1px solid #4D6BFE; color: #3350E0; font-weight: 600;
+    background: #FCE8EA; border: 1px solid #C4647A; color: #A44E63; font-weight: 600;
 }
 """
 
@@ -111,7 +114,7 @@ def _arrow_uri() -> str:
         pa = QPainter(pm)
         pa.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         pa.setPen(Qt.PenStyle.NoPen)
-        pa.setBrush(QColor("#8794B0"))
+        pa.setBrush(QColor("#8A6A62"))      # 暖棕，和 theme.INK_DIM 一致
         pa.drawPolygon(QPolygonF([QPointF(4.0, 5.2), QPointF(10.0, 5.2), QPointF(7.0, 10.0)]))
         pa.end()
         path = os.path.join(tempfile.gettempdir(), "pet_combo_arrow.png")

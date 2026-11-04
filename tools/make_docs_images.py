@@ -45,13 +45,15 @@ from pet.core.config import Config                                    # noqa: E4
 from pet.ui.paint import ui_font                                      # noqa: E402
 from pet.ui.window import PetWindow                                   # noqa: E402
 
-BG = QColor(239, 243, 247)
-CARD = QColor(255, 255, 255)
-LINE = QColor(226, 232, 239)
-TEXT = QColor(52, 68, 78)
-MUTED = QColor(132, 148, 158)
-BODY = QColor(90, 108, 120)
-ACCENT = QColor(77, 107, 254)
+# 文档图跟着产品走：同一套暖米白 + 玫瑰粉（值抄自 pet/ui/theme.py）。
+# 图是读者见到产品的第一眼，图里是冷蓝、软件里是暖粉，等于先骗一次。
+BG = QColor(246, 239, 230)
+CARD = QColor(255, 253, 248)
+LINE = QColor(233, 217, 204)
+TEXT = QColor(93, 64, 58)
+MUTED = QColor(138, 106, 98)
+BODY = QColor(107, 76, 69)
+ACCENT = QColor(196, 100, 122)
 
 
 # ---------------------------------------------------------------- 通用画法
@@ -215,12 +217,12 @@ def chip(p: QPainter, cx: float, cy: float, w: float, s: str) -> None:
     """吸附时头顶那块小标签（和 window.py 的 _paint_dock_tag 同一个样子）。"""
     r = QRectF(cx - w / 2, cy, w, 19)
     p.setPen(QPen(QColor(ACCENT.red(), ACCENT.green(), ACCENT.blue(), 95), 1))
-    p.setBrush(QColor(255, 255, 255, 220))
+    p.setBrush(QColor(255, 252, 246, 232))
     p.drawRoundedRect(r, 9.5, 9.5)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(ACCENT)
     p.drawEllipse(QPointF(r.left() + 10, r.center().y()), 3.0, 3.0)
-    p.setPen(QColor(46, 60, 92))
+    p.setPen(QColor(93, 64, 58))
     p.setFont(ui_font(8))
     p.drawText(r.adjusted(18, 0, -8, 0),
                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), s)
@@ -255,7 +257,7 @@ def make_dock(path: str) -> None:
     win = QRectF(28, 150, 356, 252)
     mock_window(p, win, "隔空手势桌宠 · GitHub", rows=6)
 
-    # 窗口右缘那条蓝线 = "窗口边线"，桌宠身体压上去 16%
+    # 窗口右缘那条线 = "窗口边线"，桌宠身体压上去 16%（颜色跟 theme.PINK_DEEP）
     p.setPen(QPen(ACCENT, 2))
     p.drawLine(QPointF(win.right(), win.top() + 8),
                QPointF(win.right(), win.bottom() - 8))
@@ -266,12 +268,12 @@ def make_dock(path: str) -> None:
     cx = win.right() + body_w * (0.5 - 0.16)
     cy = win.center().y() + 34
     paste_body(p, pet_body(), cx, cy, body_h)
-    chip(p, cx, cy - body_h * 0.5 - 26, 110, "隔空手势桌宠 · Gi")
+    chip(p, cx, cy - body_h * 0.5 - 26, 122, "隔空手势桌宠 · Git")    # 宽度要放得下整句，不然尾巴被切
 
     text(p, 566, 42, 330, "吸附到窗口", 15, TEXT, bold=True)
     y = 100
     for s in ("① 头顶标签写的是\n      “现在手势动的那个窗口”",
-              "② 蓝色竖线是窗口边线，\n      身体压进 16%，不挡内容",
+              "② 那条竖线是窗口边线，\n      身体压进 16%，不挡内容",
               "③ 窗口最小化 / 最大化 / 全屏\n      时不贴，回角落待命"):
         text(p, 566, y, 330, s, 10, BODY)
         y += 86
@@ -428,6 +430,7 @@ def make_orbit(path: str) -> None:
 
     orb = OrbitMenu(win)
     orb._build("left")
+    orb._appear = 1.0            # 入场动画停在第一帧会拍成空白，直接给终态
     orb._hover = "pet"          # 让「互动」的名字胶囊出现：图上要看得出"悬停才显示"
     orb_img = orb.grab().toImage()
 
@@ -436,7 +439,7 @@ def make_orbit(path: str) -> None:
     orb_x = pet_x + int(win.pet_cx - orb._origin.x())
     orb_y = int(win.pet_cy - orb._origin.y())
 
-    cap = "左键点一下：三个圆。鼠标停上去才显示名字"
+    cap = "左键点一下：设置 / 互动 / 操作。鼠标停上去才显示名字"
     cap_h = 34
     # 说明文字要放得下，否则会被右边裁掉（图上缺半句比没有更糟）
     from PySide6.QtGui import QFontMetrics as _FM

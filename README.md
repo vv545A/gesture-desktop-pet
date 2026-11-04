@@ -714,7 +714,7 @@ python calibrate.py --hold 4 --buffer 2            # 放慢节奏
 ```bash
 python tests/test_gestures.py     # 20 项：悬停防抖 / 静止门控 / 缩放步进 / 连捏重置 / 总开关序列 / 左右判定
 python tests/test_pet_core.py     # 115 项：事件总线 / 判定引擎 / 游戏模式 / 双手滚动 / 映射与预设 / 绑定 / 吸附 / 动作片段 / 配置迁移
-python tests/test_pet_states.py   # 80 项：睡觉锁 / 跳舞 / 跟随 / 撸宠 / 亲密度 / 右键与面板入口 / 圆按钮与预设切换 / 游戏开关反馈（Qt offscreen）
+python tests/test_pet_states.py   # 83 项：睡觉锁 / 跳舞 / 跟随 / 撸宠 / 亲密度 / 右键与面板入口 / 圆按钮与预设切换 / 游戏开关反馈（Qt offscreen）
 python tests/test_rps.py          # 29 项：石头剪刀布的完整规则（假时钟，不用等倒数）
 python tests/test_bond.py         # 27 项：亲密度等级 / 持久化 / 坏文件容错
 python tests/test_emotion.py      # 13 项：情绪判定优先级 / 缺字段容错
@@ -825,6 +825,7 @@ hand-control/
 │   ├── perception/presence.py           在场检测（BlazeFace，人走打盹、人回迎接）
 │   ├── perception/emotion.py            情绪感知（FaceLandmarker blendshapes）
 │   ├── game/rps.py                      石头剪刀布（纯状态机，规则不进 UI）
+│   ├── ui/theme.py                      ★ 界面配色令牌（从立绘采样：米白/玫瑰粉/薄荷/裙蓝）
 │   ├── ui/orbit.py                      ★ 左键点桌宠弹出的三个圆按钮（设置/互动/操作）
 │   ├── ui/panel.py                      ★ 设置按钮打开的控制面板
 │   ├── ui/anim.py                       ★ 动作系统：10 个关键帧片段 + 采样器
