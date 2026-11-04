@@ -366,4 +366,123 @@ control2.set_game(True)
 check("pending 状态下能关掉游戏", control2.toggle_game() is False
       and control2.worker._game_pending is False)
 
+print("== 左键单击：弹三个圆按钮，不再直接弹面板 ==")
+# 用户要求：左键点它弹"设置/互动/操作"三个圆，设置才开面板，
+# 另外两个直接切换单手表。右键保持不变（上面那组用例还在锁它）。
+from pet.intent import mapping                                       # noqa: E402
+
+# 这个窗口要真的能改配置，所以带上真正的 ControlCenter（make_window 没挂）
+cfg3 = Config()
+cfg3.sprite = ""
+cfg3.sprite_side = ""
+cfg3.click_through = False
+cfg3.save = lambda *a, **k: None      # 绝不写用户真实的 gestures.yaml
+bus3 = EventBus()
+engine3 = GestureEngine(cfg3)
+control3 = ControlCenter(bus3, engine3, cfg3)
+win3 = PetWindow(bus3, cfg3, control3)
+win3.show()
+p3 = QPointF(win3.pet_cx, win3.pet_cy)
+click_body = QMouseEvent(QEvent.Type.MouseButtonPress, p3,  # noqa: E402
+                         win3.mapToGlobal(p3.toPoint()),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier)
+win3.mousePressEvent(click_body)
+win3.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, p3,
+                                   win3.mapToGlobal(p3.toPoint()),
+                                   Qt.MouseButton.LeftButton,
+                                   Qt.MouseButton.LeftButton,
+                                   Qt.KeyboardModifier.NoModifier))
+check("左键单击弹出三个圆按钮", win3._orbit is not None and win3._orbit.isVisible())
+check("…而且没有直接弹控制面板", win3._panel is None or not win3._panel.isVisible())
+check("圆按钮是三个", len(win3._orbit._centers) == 3)
+check("三个键分别是 设置 / 互动 / 操作",
+      [n for _k, _i, n, _c in win3._orbit._centers] == ["设置", "互动", "操作"])
+check("每个圆都带一个图标",
+      all(i for _k, i, _n, _c in win3._orbit._centers))
+
+# 圆按钮的几何：三个圆不该压到宠物身上（压上去点不到宠物，
+# 看着也像贴错位置的贴纸）
+_ox, _oy = win3._orbit._origin.x(), win3._orbit._origin.y()
+_nearest = min(((c.x() - _ox) ** 2 + (c.y() - _oy) ** 2) ** 0.5
+               for _k, _i, _n, c in win3._orbit._centers)
+check(f"圆按钮在宠物身外（最近圆心 {_nearest:.0f}px > 半身宽 {win3.body_w / 2:.0f}px）",
+      _nearest - 23 > win3.body_w / 2)
+
+# 名称：悬停才出现，鼠标移开就消失
+_c = win3._orbit._centers[1][3]
+win3._orbit.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, _c, _c,
+                                       Qt.MouseButton.NoButton,
+                                       Qt.MouseButton.NoButton,
+                                       Qt.KeyboardModifier.NoModifier))
+check("指针停在圆上 = 高亮它", win3._orbit._hover == "pet")
+check("悬停时给出名称", win3._orbit.toolTip() == "互动")
+win3._orbit.leaveEvent(None)
+check("移开就收起名称", win3._orbit._hover == "")
+
+# 点「互动」-> 整套切成逗桌宠，并且**立刻写进配置**
+says3 = []
+bus3.subscribe(PetSay, lambda e: says3.append(e.text))
+win3._orbit.popup_near(win3)
+win3._orbit.activate("pet")
+bus3.drain()
+check("点『互动』= 单手切成逗桌宠",
+      mapping.resolve("right", "VICTORY").key == "pet:dance"
+      and mapping.current_single_preset() == "pet")
+check("…改的是左手右手共 14 格，不是只改一个",
+      mapping.resolve("left", "FIST").key == "pet:sleep"
+      and mapping.resolve("left", "OPEN_PALM").key == "pet:wake")
+check("…并且说一句（不能点了没反应）",
+      bool(says3) and "陪你玩" in says3[-1])
+check("…切完把圆按钮收起来",
+      not win3._orbit.isVisible())
+
+# 点「操作」-> 切回窗口那套，配置回到"没有覆盖"（=出厂表）
+win3._orbit.popup_near(win3)
+win3._orbit.activate("window")
+bus3.drain()
+check("点『操作』= 单手切成操作窗口",
+      mapping.resolve("right", "VICTORY").key == "alt_tab"
+      and mapping.current_single_preset() == "window")
+check("…窗口那套是出厂表，覆盖清单清空",
+      not win3.cfg.bindings)
+
+# 点「设置」-> 才打开原来那张面板
+win3._orbit.popup_near(win3)
+win3._orbit.activate("settings")
+check("点『设置』才打开控制面板",
+      win3._panel is not None and win3._panel.isVisible())
+check("…开面板时圆按钮已收起（两个浮层别打架）", not win3._orbit.isVisible())
+
+# 已经是这套时再点，不谎报"已切换"，但要给回应
+says3.clear()
+win3.control.set_single_preset("window")
+bus3.drain()
+check("重复点同一套 = 说明本来就这套，不假装又切了一次",
+      bool(says3) and "就是" in says3[-1])
+
+# 双手（音乐）的绑定不能被单表切换顺手清掉
+win3.cfg.bindings = {"both:FIST": "play_pause"}
+win3.control.set_single_preset("pet")
+check("切单手不动双手的绑定",
+      mapping.resolve("both", "FIST").key == "play_pause", )
+check("…双手那条仍留在配置里", win3.cfg.bindings.get("both:FIST") == "play_pause")
+win3.control.set_single_preset("window")
+check("切回来也不动双手",
+      mapping.resolve("both", "FIST").key == "play_pause"
+      and win3.cfg.bindings.get("both:FIST") == "play_pause")
+# 识别关着时切表要提醒"改了但不会发生"，否则用户以为切换失败了
+engine3.set_enabled(False)
+says3.clear()
+win3.control.set_single_preset("pet")
+bus3.drain()
+check("识别关着时切表会提醒去打开",
+      bool(says3) and "识别关着" in says3[-1])
+check("…但表真的切了（不是什么都不做）",
+      mapping.resolve("right", "VICTORY").key == "pet:dance")
+
+check("不认识的名字不瞎切", win3.control.set_single_preset("火星版") is False)
+
+mapping.apply_bindings({})           # 收尾：把运行时表还原，别污染后面
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

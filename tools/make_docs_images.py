@@ -9,10 +9,13 @@
     是"一只已经不存在的宠物"，而手工重截图再拼版，下次换形象又得重来一遍。
     所以把拼版写成脚本：图里的桌宠永远是**当前配置里那只**。
 
-生成三张（输出到仓库根目录）：
+生成这些（输出到仓库根目录）：
     pet_dock.png           吸附到窗口（窗口边线、压边比例、标签）
     pet_cursor_follow.png  跟鼠标的绳子模型（110px 尾随距离）
-    pet_ui_panel.png       右上角关闭键 + 点桌宠弹出的控制面板
+    pet_orbit.png          左键点桌宠弹出的三个圆按钮（设置/互动/操作）
+    pet_ui_panel.png       右上角关闭键 + 设置按钮打开的控制面板
+    pet_moods.png          六种情绪并排
+    pet_bindings.png       手势对照表（带"操作窗口 / 逗桌宠"两个预设按钮）
 
 另外两张不在这里，用的是运行时同一份绘制代码：
     python -m pet --snapshot pet_poses.png          七帧立绘 + 悬停环
@@ -402,10 +405,57 @@ def make_bindings(path: str) -> None:
     print(f"[docs] {path}  ({pm.width()}x{pm.height()})")
 
 
+def make_orbit(path: str) -> None:
+    """
+    左键点一下桌宠 -> 身侧三个圆按钮。
+
+    真实控件截图拼在一起（桌宠窗口 + OrbitMenu），不是画出来的假 UI ——
+    这样"圆摆在哪、离身体多远"这些最容易出问题的数字，图上一眼就能核对。
+    """
+    from pet.ui.orbit import OrbitMenu
+
+    cfg = _cfg()
+    # 这张图讲的是"点它出三个圆"，所以强制成角落模式：否则本机若开着
+    # "吸附窗口"，桌上那个前台窗口的标题条会一起入画，读者会以为那是按钮组的一部分。
+    cfg.follow = "corner"
+    win = PetWindow(EventBus(), cfg, control=_FakeControl(),
+                    bond=_demo_bond())
+    win.resize(win.win_w, win.win_h)
+    win._mood = "idle"
+    win._tick()
+    win._phase = 1.2
+    pet = win.grab().toImage()
+
+    orb = OrbitMenu(win)
+    orb._build("left")
+    orb._hover = "pet"          # 让「互动」的名字胶囊出现：图上要看得出"悬停才显示"
+    orb_img = orb.grab().toImage()
+
+    # 三个圆的弧心就是宠物中心，所以按这个关系把两张图对上去
+    pet_x = int(orb._origin.x() - win.pet_cx) + 14
+    orb_x = pet_x + int(win.pet_cx - orb._origin.x())
+    orb_y = int(win.pet_cy - orb._origin.y())
+
+    cap = "左键点一下：三个圆。鼠标停上去才显示名字"
+    cap_h = 34
+    # 说明文字要放得下，否则会被右边裁掉（图上缺半句比没有更糟）
+    from PySide6.QtGui import QFontMetrics as _FM
+    cap_w = _FM(ui_font(9)).horizontalAdvance(cap) + 28
+    pm, p = canvas(max(pet_x + pet.width() + 14, cap_w),
+                   max(pet.height(), orb_y + orb_img.height()) + cap_h)
+    p.drawImage(pet_x, 0, pet)
+    p.drawImage(orb_x, orb_y, orb_img)
+    text(p, 14, pm.height() - cap_h + 6, pm.width() - 28, cap, 9, MUTED)
+    p.end()
+    pm.save(path)
+    print(f"[docs] {path}  ({pm.width()}x{pm.height()})")
+
+
 def main() -> int:
     _app = QApplication.instance() or QApplication([])
     make_dock(os.path.join(HERE, "pet_dock.png"))
     make_cursor(os.path.join(HERE, "pet_cursor_follow.png"))
+    make_orbit(os.path.join(HERE, "pet_orbit.png"))
     make_panel(os.path.join(HERE, "pet_ui_panel.png"))
     make_moods(os.path.join(HERE, "pet_moods.png"))
     make_bindings(os.path.join(HERE, "pet_bindings.png"))

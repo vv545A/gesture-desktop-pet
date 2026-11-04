@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from .bus import EventBus
 from .config import Config
 from .engine import GestureEngine
@@ -170,3 +172,53 @@ class ControlCenter:
         playing = bool(getattr(getattr(worker, "game", None), "active", False)) \
             or bool(getattr(worker, "_game_pending", False))
         return self.set_game(not playing)
+
+    # ---------------------------------------------------------------- 单手表
+    def set_single_preset(self, name: str) -> bool:
+        """
+        单手手势整套切换（"操作窗口" / "逗桌宠"）。
+
+        为什么放在 ControlCenter 而不是各个界面里：
+            现在有两个入口会调它——桌宠旁边那三个圆按钮、对照表顶部的胶囊。
+            如果各写一遍"取预设 + 比对默认 + 写 cfg + 落盘 + 通知 mapping"，
+            迟早有一处漏掉 `mapping.apply_bindings`，表现就是"点了、按钮高亮
+            也变了、但手势还是旧的"。
+
+        只动 left/right 的 14 个键，`both:`（双手音乐）和用户其它自定义原样
+        保留：换单手的玩法不该顺手把双手的绑定也清掉。
+        """
+        from ..intent import mapping       # 延迟导入：core 层不必常驻依赖 intent
+
+        rows = mapping.preset_bindings(name)
+        if not rows:
+            return False
+        if name == mapping.current_single_preset():
+            # 已经是这套了。仍然说一句，不然点了没反应像坏了；
+            # 但不说"已切换"——那是在骗人。
+            label = mapping.SINGLE_PRESET_LABEL.get(name, name)
+            self.bus.post(PetSay(text=f"现在就是「{label}」呀", mood="calm"))
+            return True
+
+        default = mapping.default_bindings()
+        merged = {k: v for k, v in dict(self.cfg.bindings or {}).items()
+                  if str(k).split(":")[0] not in ("left", "right")}
+        for key, action in rows.items():
+            # 只存"和默认不一样"的：预设窗口那套就是出厂表，落盘后 bindings
+            # 回到空，以后默认表升级也能吃到（同 binding 页的 _apply）。
+            if default.get(key) != action:
+                merged[key] = action
+
+        self.cfg.bindings = merged
+        mapping.apply_bindings(merged)
+        try:
+            self.cfg.save()
+        except Exception as e:      # 落盘失败不影响本次会话，别把点击卡住
+            logging.getLogger(__name__).error("保存配置失败：%s", e)
+
+        label = mapping.SINGLE_PRESET_LABEL.get(name, name)
+        text = "好，单手改成操作电脑啦" if name == "window" else "好，单手陪你玩～"
+        if not self.enabled:
+            # 识别关着时切表等于"改了但不会发生"。不说清楚，用户会以为切换失败。
+            text += "（识别关着，点右上角 ▶ 打开）"
+        self.bus.post(PetSay(text=f"{text}（{label}）", mood="happy", anim="nod"))
+        return True

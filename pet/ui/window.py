@@ -108,12 +108,14 @@ class PetWindow(QWidget):
         self._hover_dwell = 0.0            # 指针在身体上已经停了多久
 
         self._panel = None                  # 弹出式控制面板（懒创建）
+        self._orbit = None                  # 左键点出来的圆形按键组（懒创建）
         self._bindings = None               # 手势对照表页面（懒创建）
         # 托盘：由 app 建好之后 attach_tray() 挂上来。
         # 右键桌宠时弹出的是**托盘那一份**菜单——只建一份，两个入口共用，
         # 这样"手势识别/情绪感知/石头剪刀布"的勾选状态永远一致。
         self._tray = None
         self._panel_anchor = QPointF(0, 0)  # 开面板时宠物的位置（跟随用）
+        self._orbit_anchor = QPointF(0, 0)  # 开圆按钮组时宠物的位置（跟随用）
         self._press_at: Optional[QPointF] = None
         self._press_target = ""             # "btn" / "body" / ""
         self._drag_moved = False
@@ -997,6 +999,13 @@ class PetWindow(QWidget):
                 self._panel.popup_near(self)
                 self._panel_anchor = QPointF(self._pos)
 
+        # 3c) 圆按钮组同理。它虽然也停着宠物，但"吸附窗口"模式下宠物会被
+        #     前台窗口带着走，不跟着重定位就会飘到一边去。
+        if self._orbit is not None and self._orbit.isVisible():
+            if (self._pos - self._orbit_anchor).manhattanLength() > 40:
+                self._orbit.popup_near(self)
+                self._orbit_anchor = QPointF(self._pos)
+
         # 4) 呼吸与晃动：一直存在的微小运动，静止时也不像一张贴图
         target = PetPose.for_mood(self._mood)
         target.squash += 0.030 * math.sin(now * 2.1)
@@ -1264,17 +1273,37 @@ class PetWindow(QWidget):
 
         if self._panel is not None and self._panel.isVisible():
             self._close_panel()          # 菜单和面板不同时开着，避免互相遮挡
+        self._close_orbit()              # 圆按钮组同理：右键时它该让位
         self._touch(time.monotonic())
         menu.popup(ev.globalPos())
         ev.accept()
 
     def open_panel(self) -> None:
-        """点桌宠 -> 弹出开关面板（延迟导入：不开面板就不加载这套代码）。"""
+        """弹出开关面板（延迟导入：不开面板就不加载这套代码）。"""
         from .panel import ControlPanel
         if self._panel is None:
             self._panel = ControlPanel(self)
         self._panel.popup_near(self)
         self._panel_anchor = QPointF(self._pos)
+
+    def open_orbit(self) -> None:
+        """
+        左键单击 -> 宠物身侧弹出三个圆形按键（设置 / 互动 / 操作）。
+
+        为什么不直接弹控制面板：
+            面板十几行，而点桌宠的人通常只想"调一下"或"换个玩法"。
+            先用三个圆把意图分一次流，设置才落到那张表上。
+        """
+        from .orbit import OrbitMenu
+        if self._orbit is None:
+            self._orbit = OrbitMenu(self)
+        self._orbit.popup_near(self)
+        self._orbit_anchor = QPointF(self._pos)
+
+    def _close_orbit(self) -> None:
+        orbit = getattr(self, "_orbit", None)
+        if orbit is not None and orbit.isVisible():
+            orbit.close()
 
     def open_bindings(self) -> None:
         """打开"手势对照表"页面（能看也能改）。已经开着就提到前面。"""
@@ -1287,12 +1316,12 @@ class PetWindow(QWidget):
 
     def _ui_open(self) -> bool:
         """
-        是不是有自绘界面（控制面板 / 对照表）正开着。
+        是不是有自绘界面（圆按钮组 / 控制面板 / 对照表）正开着。
 
-        开着的时候一切跟随都要停：面板相对宠物定位、对照表是模态工作流，
-        宠物在用户手底下乱跑，点哪个都点不中。
+        开着的时候一切跟随都要停：这些界面相对宠物定位，宠物在用户手底下
+        乱跑，点哪个都点不中——"点不到设置窗口"有一半原因就是这个。
         """
-        for w in (self._panel, self._bindings):
+        for w in (self._orbit, self._panel, self._bindings):
             if w is not None and w.isVisible():
                 return True
         return False
@@ -1328,10 +1357,13 @@ class PetWindow(QWidget):
             self._drag_grab = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.raise_()
+            # 拎起来准备挪位置 = "我不看菜单了"，两个浮层都收掉
             self._close_panel()
+            self._close_orbit()
         else:
             self._press_target = ""
             self._close_panel()      # 点透明空白 = 收面板
+            self._close_orbit()
         ev.accept()
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802
@@ -1386,7 +1418,10 @@ class PetWindow(QWidget):
                     self.say("唔…我醒了", "happy")
                 else:
                     self.pet_me()
-                    self.open_panel()
+                    # 单击弹的是三个圆按钮，不是控制面板：面板十几行，
+                    # 而点桌宠的人通常只想"调一下"或"换个玩法"。设置按钮
+                    # 才落到原来的面板上（见 orbit.activate）。
+                    self.open_orbit()
         else:
             # 用户刚把它摆好，10 秒内别自己跑走（否则"我放这儿"的意图被无视）
             self._park_until = time.monotonic() + 10.0
