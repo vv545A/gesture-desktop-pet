@@ -32,6 +32,7 @@ from gestures import (
     Debouncer,
     GestureSmoother,
     MotionGate,
+    PalmFlip,
     StepAccumulator,
     SwipeDetector,
     analyze_two_hands,
@@ -68,7 +69,7 @@ class EngineOut:
     moving: bool = False
     speed: float = 0.0
     fired: List[Fired] = field(default_factory=list)
-    continuous: List[Tuple[str, float]] = field(default_factory=list)  # 预留（缩放/滚动）
+    continuous: List[Tuple[str, float]] = field(default_factory=list)  # ("scroll", 格数)
     toggled: Optional[bool] = None         # 本次是否切换了总开关
 
 
@@ -97,6 +98,11 @@ class GestureEngine:
         self.scroll_step = (StepAccumulator(step_size=max(0.05, cfg.scroll_step),
                                             max_steps=2)
                             if cfg.scroll_step > 0 else None)
+
+        # 翻掌滚轮：张开手掌 + 手腕转动、手掌上下翻 = 页面上下滚。
+        # 和食指滚轮并存的理由：食指要一直伸着（手被占住），翻掌是举手顺便一翻。
+        self.flip = (PalmFlip(step_size=max(0.05, cfg.flip_step))
+                     if cfg.flip_on else None)
 
         # 双手：配对也要表决 + 悬停确认。
         # 以前双手没有任何滤波（直接读每帧 recognize 的结果），一帧翻车就
@@ -142,6 +148,8 @@ class GestureEngine:
             self.swipe.reset()
         if self.scroll_step is not None:
             self.scroll_step.reset()
+        if self.flip is not None:
+            self.flip.reset()
         self._pinch_since = None
         if self.gate is not None:
             self.gate.reset()
@@ -192,6 +200,8 @@ class GestureEngine:
             self.smoother.reset()
             self.deb_pair.reset()
             self.pair_smoother.reset()
+            if self.flip is not None:
+                self.flip.reset()          # 手离开画面，翻转基准不能留着
             if self.gate is not None:
                 self.gate.reset()
 
@@ -241,6 +251,8 @@ class GestureEngine:
             self.swipe.reset()
         if self.scroll_step is not None:
             self.scroll_step.reset()
+        if self.flip is not None:
+            self.flip.reset()
         if self.gate is not None:
             self.gate.reset()
 
@@ -303,6 +315,33 @@ class GestureEngine:
                     self.gate.reset()
                 return
 
+        # ---- 翻掌滚轮：张开手掌 + 手腕转动、手掌上下翻 = 页面上下滚 ----
+        # 放在挥手之后判：挥手要位移 ≥1.6 掌长，翻掌是原地翻，两者不会同时成立；
+        # 先判挥手，一次挥动就不会被拆成"边翻页边滚动"。
+        if self.flip is not None and not self.game_mode and g == "OPEN_PALM":
+            n = self.flip.update(now, hand)
+            if n:
+                # 小指侧抬起 = 往下翻 = 页面向下，和食指滚轮"手往下 -> 页面向下"一致
+                out.continuous.append(("scroll", float(-n)))
+                out.moving = True
+                self.deb.reset()
+                # 翻完手往往还张着看页面滚到哪，不 mute 的话半秒后会把
+                # "张开手掌 = 最大化"也触发，用户根本猜不到是自己翻掌翻出来的
+                self.deb.mute(g)
+                self.swipe.reset()
+                if self.gate is not None:
+                    self.gate.reset()
+                return
+            if self.flip.active:
+                # 正在翻但还没攒够一格：同样要冻结悬停计时。
+                # 翻掌时掌心几乎不动，静止闸门看不出来，不管的话翻到一半就触发了。
+                out.moving = True
+                self.deb.update(g, now, moving=True)
+                out.progress = 0.0
+                return
+        elif self.flip is not None:
+            self.flip.reset()
+
         still = True
         if self.gate is not None and not self.game_mode:
             still = self.gate.update(now, hand)
@@ -325,6 +364,8 @@ class GestureEngine:
         # 但必须清掉，否则回到单手时会把"上一段"的位移算进来。
         if self.scroll_step is not None:
             self.scroll_step.reset()
+        if self.flip is not None:
+            self.flip.reset()
         if self.swipe is not None:
             self.swipe.reset()
         if self.gate is not None:
@@ -374,6 +415,7 @@ class GestureEngine:
             "long": self.deb.n_long,
             "pair_fired": self.deb_pair.n_fired,
             "swipe": self.swipe.n_fired if self.swipe is not None else 0,
+            "flip": self.flip.n_steps if self.flip is not None else 0,
             "gap_reset": self.deb.n_gap_reset,
             "gap_tolerated": self.deb.n_gap_tolerated,
             "restart": self.deb.n_restart,

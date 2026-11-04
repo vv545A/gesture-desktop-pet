@@ -342,6 +342,13 @@ class BindingsDialog(QDialog):
         g2.setColumnStretch(1, 1)
         outer.addLayout(g2)
 
+        # 翻掌是连续量，不占绑定格子，只在这里说明用法 —— 否则用户永远发现不了
+        tip_flip = QLabel("翻掌 —— 张开手掌，手腕转动让手掌上下翻，就是页面上下滚动。"
+                          "它和挥手共用「张开手掌」：横着划走是翻页，原地翻是滚动。")
+        tip_flip.setObjectName("hint")
+        tip_flip.setWordWrap(True)
+        outer.addWidget(tip_flip)
+
         outer.addStretch(1)
         return page
 

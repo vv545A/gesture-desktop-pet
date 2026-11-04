@@ -16,7 +16,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gestures as G                     # noqa: E402
-from hand_tracker import Hand, assign_sides, WRIST, MIDDLE_MCP   # noqa: E402
+from hand_tracker import (Hand, assign_sides, WRIST, MIDDLE_MCP,   # noqa: E402
+                          INDEX_MCP, PINKY_MCP)
 
 DT = 1 / 30
 PASS = []
@@ -246,6 +247,44 @@ for _i in range(60):
     _n3 += bool(_dl2.long_fired)
     _t3 += DT
 check("long_after=0 时完全不长按", _n3 == 0)
+
+# ---------------------------------------------------------------- 翻掌
+print("== PalmFlip：翻掌滚动的信号 ==")
+# 信号 = 小指根与食指根的高度差 ÷ 掌长。下面几条都是"换个位置/换个远近，
+# 这个量不该变"—— 否则用户在画面里挪一下手就会莫名其妙滚一屏。
+_f0 = G.PalmFlip.tilt(mkhand())
+check("掌面正对摄像头时高度差接近 0", abs(_f0) < 0.2, f"({_f0:.2f})")
+
+_lm = mkhand().landmarks.copy()
+_lm[PINKY_MCP][1] = _lm[INDEX_MCP][1] - 0.10        # 小指根抬高 = 往下翻
+check("小指侧抬起 -> 负（往下翻）", G.PalmFlip.tilt(
+    Hand(landmarks=_lm, score=0.9, aspect=1280 / 720)) < -0.4)
+
+_lm2 = mkhand().landmarks.copy()
+_lm2[PINKY_MCP][1] = _lm2[INDEX_MCP][1] + 0.10      # 小指根压低 = 往上翻
+check("小指侧压低 -> 正（往上翻）", G.PalmFlip.tilt(
+    Hand(landmarks=_lm2, score=0.9, aspect=1280 / 720)) > 0.4)
+
+check("整只手平移不改变翻动角",
+      abs(G.PalmFlip.tilt(mkhand(dx=0.25, dy=-0.2)) - _f0) < 1e-6,
+      f"({G.PalmFlip.tilt(mkhand(dx=0.25, dy=-0.2)):.3f})")
+# 手离镜头远 = 关键点间距等比缩小，掌长也跟着缩，比值应该不变
+_near = mkhand().landmarks.copy()
+_far = (mkhand().landmarks * np.array([0.6, 0.6, 1.0], np.float32)).astype(np.float32)
+check("手离镜头远近不改变翻动角",
+      abs(G.PalmFlip.tilt(Hand(landmarks=_near, score=.9, aspect=1280/720))
+          - G.PalmFlip.tilt(Hand(landmarks=_far, score=.9, aspect=1280/720))) < 1e-5)
+
+_pf = G.PalmFlip(step_size=0.22)
+_t = 0.0
+for _i in range(13):
+    _lm3 = mkhand().landmarks.copy()
+    _lm3[PINKY_MCP][1] = _lm3[INDEX_MCP][1] - 0.105 * (_i / 12)
+    _pf.update(_t, Hand(landmarks=_lm3, score=0.9, aspect=1280 / 720))
+    _t += DT
+check("翻一次会出好几格", _pf.n_steps >= 2, f"({_pf.n_steps} 格)")
+_pf.reset()
+check("reset 后累计清零", _pf.n_steps >= 2 and _pf.step.prev is None)
 
 # ---------------------------------------------------------------- 左右手
 print("== 左右手判定 ==")

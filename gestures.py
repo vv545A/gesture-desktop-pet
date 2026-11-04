@@ -26,6 +26,7 @@ from hand_tracker import (
     WRIST,
     THUMB_IP,
     THUMB_TIP,
+    INDEX_MCP,
     INDEX_TIP,
     INDEX_PIP,
     MIDDLE_MCP,
@@ -33,6 +34,7 @@ from hand_tracker import (
     MIDDLE_PIP,
     RING_TIP,
     RING_PIP,
+    PINKY_MCP,
     PINKY_TIP,
     PINKY_PIP,
 )
@@ -433,6 +435,70 @@ class SwipeDetector:
 SWIPE_TRAVEL = 1.6
 
 
+class PalmFlip:
+    """
+    翻掌 —— 手腕转动让手掌上下翻，用来滚动页面。
+
+    为什么单独做这一种：食指滚轮要求一直举着 ☝️，做别的事就得先把手放下；
+    翻掌是**张开手掌顺手翻一下**，不用换姿势，而且翻转幅度大、信号干净，
+    比盯着掌心挪 3 厘米省力得多。
+
+    信号：**小指根与食指根的高度差 ÷ 掌长**。
+        掌心正对摄像头（自然举手）  ≈ 0
+        手掌翻成水平（朝上或朝下）  ≈ ±0.8（差不多一个掌宽）
+    这个量随翻转角单调变化，取累计位移出格就是"旋钮"，
+    而且对整只手在画面里平移、离镜头远近都不敏感 —— 平移不改变两点相对高度，
+    远近被掌长归一化掉了。
+
+    为什么不用 3D 法线：MediaPipe 的 z 抖动大，这个项目一直只用 x/y
+    （见 _dist 的注释）。两个 2D 点的高度差已经够表达"翻没翻"了。
+
+    局限（写在明处）：手在画面里**整体歪着**也会让两点出现高度差。但那是静态
+    偏移，StepAccumulator 只对"变化"出格，歪一下不会持续滚；只有真的在翻转
+    才会一路累计。左/右手不需要分别处理：内旋（掌心朝下）时两手都是小指侧抬起。
+    """
+
+    def __init__(self, step_size: float = 0.22, window: float = 0.35,
+                 active_delta: float = 0.12) -> None:
+        self.step = StepAccumulator(step_size=max(0.05, abs(step_size)),
+                                    max_steps=2)
+        self.window = window
+        self.active_delta = active_delta
+        self._q: Deque[Tuple[float, float]] = deque()   # (t, tilt)
+        self.active = False       # 正在翻（引擎据此冻结悬停计时）
+        self.n_steps = 0
+
+    @staticmethod
+    def tilt(hand: Hand) -> float:
+        """翻动高度差，单位掌长。负 = 小指侧抬起（往掌心向下的方向翻）。"""
+        dy = (float(hand.landmarks[PINKY_MCP][1])
+              - float(hand.landmarks[INDEX_MCP][1]))
+        palm = max(_dist_metric(hand, WRIST, MIDDLE_MCP), 1e-6)
+        return dy / palm
+
+    def update(self, now: float, hand: Hand) -> int:
+        """返回这一帧该滚几格（正 = 页面向上，负 = 向下），0 = 不动。"""
+        t = self.tilt(hand)
+        self._q.append((now, t))
+        while self._q and now - self._q[0][0] > self.window:
+            self._q.popleft()
+
+        # 用窗口内的极差而不是首尾差：翻过去又翻回来，首尾可能一样，
+        # 但那段时间明明一直在动 —— 用首尾差会漏判，悬停计时就会偷跑。
+        vals = [v for _t, v in self._q]
+        self.active = (max(vals) - min(vals)) >= self.active_delta
+
+        n = self.step.update(t)
+        if n:
+            self.n_steps += abs(n)
+        return n
+
+    def reset(self) -> None:
+        self._q.clear()
+        self.step.reset()
+        self.active = False
+
+
 class Debouncer:
     """
     手势防抖 + 悬停确认 + 边沿触发。
@@ -476,6 +542,11 @@ class Debouncer:
         self._long_armed: bool = True   # 同一个手势只长按一次，变化后重新武装
         self.long_progress: float = 0.0
 
+        # 被"用掉"的手势：它在这次举手里不再具备悬停含义，必须换手势或松手。
+        # 翻掌滚动之后调 mute() —— 否则翻完手掌还张着，半秒后就把"最大化"触发了。
+        # 不用"静音 N 秒"是因为那解决不了根本问题：静音结束手还举着，照样触发。
+        self._muted: Optional[str] = None
+
         # 诊断计数（--trace 用），不参与判定
         self.n_fired = 0
         self.n_long = 0
@@ -483,6 +554,20 @@ class Debouncer:
         self.n_gap_tolerated = 0
         self.n_gap_reset = 0
         self.n_motion_paused = 0
+        self.n_muted = 0
+
+    def mute(self, gesture: Optional[str]) -> None:
+        """
+        这个手势已经被别的玩法用掉了（例如翻掌滚过了），本轮不许再触发悬停动作。
+
+        解除条件是**手势变了或松手**，不是等一段时间 —— 用户翻完掌往往还张着
+        手看页面滚到哪里，等一会儿就触发"最大化"最让人莫名其妙。
+        """
+        self._muted = gesture
+        self._held = 0.0
+        self.progress = 0.0
+        self.long_progress = 0.0
+        self._armed = False
 
     def update(self, raw: Optional[str], now: float,
                moving: bool = False) -> Tuple[Optional[str], bool]:
@@ -504,6 +589,18 @@ class Debouncer:
         dt = 0.0 if self._last_call_at is None else now - self._last_call_at
         self._last_call_at = now
         self.long_fired = False            # 每帧复位：只有真正满长按的那一帧为 True
+
+        # 被"用掉"的手势：举着不变就绝不触发，换了手势或者松手才解除
+        if self._muted is not None:
+            if raw != self._muted:
+                self._muted = None
+            else:
+                self.n_muted += 1
+                self._cand, self.stable = raw, None
+                self._held = 0.0
+                self.progress = 0.0
+                self.long_progress = 0.0
+                return None, False
 
         if moving and raw is not None:
             self.n_motion_paused += 1
@@ -570,6 +667,7 @@ class Debouncer:
         self._long_armed = True
         self.long_fired = False
         self.long_progress = 0.0
+        self._muted = None
         self._fired_at.clear()
 
 

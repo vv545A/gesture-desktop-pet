@@ -44,6 +44,10 @@ BASE = [
 ]
 
 THUMB_TIP, INDEX_TIP = 4, 8
+INDEX_MCP, PINKY_MCP = 5, 17
+#: 掌长（腕 -> 中指根）。BASE 里 y 从 0.75 到 0.60，正好 0.15。
+#: 翻掌测试要把"翻了多少"换算成两个掌指关节的高度差，用的就是它。
+PALM_LEN = 0.15
 
 
 def check(name, cond, extra=""):
@@ -53,10 +57,15 @@ def check(name, cond, extra=""):
         raise AssertionError(name)
 
 
-def mkhand(dx=0.0, dy=0.0, side="right", gesture="", score=0.9, pinch=False):
+def mkhand(dx=0.0, dy=0.0, side="right", gesture="", score=0.9, pinch=False,
+           tilt=0.0):
     lm = np.zeros((21, 3), np.float32)
     for i, (x, y) in enumerate(BASE):
         lm[i] = (x + dx, y + dy, 0)
+    if tilt:
+        # 翻掌：让小指根相对食指根出现高度差（单位：掌长）。
+        # 负值 = 小指侧抬起 = 往"掌心向下"的方向翻，和真实手腕内旋一致。
+        lm[PINKY_MCP][1] = lm[INDEX_MCP][1] + tilt * PALM_LEN
     if pinch:
         # 拇指尖贴到食指尖上 -> 几何判据认出 PINCH（手势模型没有这个类别）
         lm[THUMB_TIP] = lm[INDEX_TIP]
@@ -237,6 +246,89 @@ for i in range(60):
     longs += sum(1 for f in out.fired if f.long)
     t += DT
 check("游戏模式里不判长按", longs == 0, f"({longs} 次)")
+
+print("== GestureEngine：翻掌滚动 ==")
+# 张开手掌 + 手腕转动让手掌上下翻 = 页面上下滚。
+# 信号是小指根与食指根的**高度差**（单位掌长），往下翻时它变小。
+eng_f = fresh_engine()
+t, vals = 0.0, []
+for i in range(13):
+    out = eng_f.update([mkhand(gesture="OPEN_PALM", tilt=-0.70 * i / 12)], t)
+    vals += [v for k, v in out.continuous if k == "scroll"]
+    t += DT
+check("往下翻会滚动页面", len(vals) >= 2, f"({len(vals)} 格)")
+check("往下翻 -> 值为正（执行层取反后向下滚）", all(v > 0 for v in vals),
+      f"({vals[:4]})")
+
+eng_fb = fresh_engine()
+t, vals = 0.0, []
+for i in range(13):
+    out = eng_fb.update(
+        [mkhand(gesture="OPEN_PALM", tilt=-0.70 + 0.70 * i / 12)], t)
+    vals += [v for k, v in out.continuous if k == "scroll"]
+    t += DT
+check("翻回来 -> 值为负（向上滚）", len(vals) >= 2 and all(v < 0 for v in vals),
+      f"({vals[:4]})")
+
+# 翻完手往往还张着看页面滚到哪。此时绝不能因为"张开手掌举了半秒"
+# 就把"最大化"也执行了 —— 用户根本猜不到是自己翻掌翻出来的。
+eng_fm = fresh_engine()
+t, fired = 0.0, []
+for i in range(13):
+    out = eng_fm.update([mkhand(gesture="OPEN_PALM", tilt=-0.70 * i / 12)], t)
+    fired += [f.gesture for f in out.fired]
+    t += DT
+for _ in range(45):                  # 翻完停在原位举 1.5 秒
+    out = eng_fm.update([mkhand(gesture="OPEN_PALM", tilt=-0.70)], t)
+    fired += [f.gesture for f in out.fired]
+    t += DT
+check("翻完不松手也不会顺手触发「张开手掌」的动作",
+      "OPEN_PALM" not in fired, f"({fired})")
+
+for _ in range(8):                   # 手离开画面 = 松手
+    eng_fm.update([], t)
+    t += DT
+for _ in range(25):
+    out = eng_fm.update([mkhand(gesture="OPEN_PALM")], t)
+    fired += [f.gesture for f in out.fired]
+    t += DT
+check("松手再张开，悬停动作恢复正常", "OPEN_PALM" in fired, f"({fired})")
+
+# 只有张开手掌才判：握拳翻腕不该滚动（否则做 ✊ 静音时会顺手滚一下）
+eng_ff = fresh_engine()
+t, n = 0.0, 0
+for i in range(13):
+    out = eng_ff.update([mkhand(gesture="FIST", tilt=-0.70 * i / 12)], t)
+    n += len(out.continuous)
+    t += DT
+check("握拳翻腕不会滚动", n == 0, f"({n} 格)")
+
+# 举手时手掌轻微来回晃是常态：不能滚、也不能触发悬停
+eng_fj = fresh_engine()
+t, n = 0.0, 0
+for i in range(90):
+    out = eng_fj.update(
+        [mkhand(gesture="OPEN_PALM", tilt=-0.02 if i % 2 else -0.20)], t)
+    n += len(out.continuous) + len(out.fired)
+    t += DT
+check("手掌小幅来回翻，既不滚也不触发悬停", n == 0, f"({n} 次)")
+
+eng_fo = fresh_engine(flip_on=False)
+t, n = 0.0, 0
+for i in range(13):
+    out = eng_fo.update([mkhand(gesture="OPEN_PALM", tilt=-0.70 * i / 12)], t)
+    n += len(out.continuous)
+    t += DT
+check("flip_on=False 关掉翻掌", n == 0, f"({n} 格)")
+
+eng_fg = fresh_engine()
+eng_fg.set_game_mode(True)
+t, n = 0.0, 0
+for i in range(13):
+    out = eng_fg.update([mkhand(gesture="OPEN_PALM", tilt=-0.70 * i / 12)], t)
+    n += len(out.continuous)
+    t += DT
+check("游戏模式里不判翻掌", n == 0, f"({n} 格)")
 
 # ---------------------------------------------------------------- 游戏模式
 print("== GestureEngine：游戏模式（出拳要能动、要能重新武装）==")
