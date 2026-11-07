@@ -80,9 +80,15 @@ class PetWindow(QWidget):
         self._aspect = self._sprite.aspect if self._sprite else 0.78
 
         # ---- 尺寸：上面留气泡，下面站宠物 ----
-        # 鲸鱼娘是竖长条（水花 + 头 + 身 + 尾），高度定尺寸、宽度按比例推，
-        # 和 paint.render_pet 里的 0.78 保持一致，换成贴图时也不会走形。
-        self.body_h = 152.0 * self.scale
+        # 高度定尺寸、宽度按比例推，和 paint.render_pet 里的 0.78 保持一致，
+        # 换成贴图时也不会走形。
+        #
+        # 196 不是随手写的：换成 GIF 动画之后，素材画布是 260×390，角色只占
+        # 73%（挥手那套手臂最宽，把画布撑大了）。而旧的静态立绘角色占 95%。
+        # 要让它看起来**和以前一样大**，body_h 得按 0.95/0.73 反着补回去：
+        # 152 * 0.95 / 0.73 ≈ 198。取 196 是因为新素材的角色略高一点。
+        # 别直接改回 152 —— 那会让桌宠凭空小四分之一。
+        self.body_h = 196.0 * self.scale
         self.body_w = self.body_h * self._aspect
         self.win_w = int(self.body_w * 1.95)
         # 高度 = 身体 + 上方气泡空间 + 下方余量（进度环会画到身体外面，
@@ -161,6 +167,8 @@ class PetWindow(QWidget):
         self._anim = anim.AnimPlayer()
         self._motion = None                # 本帧采样到的动作变换
         self._frame = anim.frame_for_mood("idle")   # 当前画的立绘帧
+        self._clip = anim.anim_for_mood("idle")     # 当前播的循环动画（""=不播）
+        self._click_alt = False            # 点一下轮换：比心 / 挥手
         self._sit = False                  # 是不是坐在地上
         self._yawned = False               # 这一轮"困了"有没有打过哈欠
         self._stretched = False            # 坐久了有没有伸过懒腰（只伸一次）
@@ -621,9 +629,18 @@ class PetWindow(QWidget):
         elif n >= 2:
             self._anim.play("hop", now, force=True)
             self.say(random.choice(["还要～", "嘿嘿，再来", "好痒好痒"]), "happy")
+            self._set_mood("happy", hold=3.0)   # 让比心动画完整播一轮
         else:
             self._anim.play("pat", now, force=True)
-            self.say("嘿嘿…好痒", "love")
+            # 点一下 = 播一整套动作，比心 / 挥手轮着来。
+            # 老是同一张脸，点第二下就没有惊喜了 —— 用户原话就是"比心或者挥手"。
+            self._click_alt = not self._click_alt
+            if self._click_alt:
+                self.say("嘿嘿…好痒", "love")
+                self._set_mood("love", hold=3.0)
+            else:
+                self.say("在呢～", "wave")
+                self._set_mood("wave", hold=3.0)
         return n
 
     def _bond_add(self, kind: str) -> None:
@@ -1056,6 +1073,10 @@ class PetWindow(QWidget):
         self._motion = self._anim.sample(now)
         self._frame = (self._motion.frame if self._motion is not None
                        and self._motion.frame else anim.frame_for_mood(self._mood))
+        # 动画优先于静态帧：美术画的整套动作，比"换张表情图 + 整体缩放"更像活的。
+        # 拖动时强制"被拎起"——那套里脚是离地的，比任何表情都更能说明状态。
+        self._clip = ("drag" if (self._dragging and self._drag_moved)
+                      else anim.anim_for_mood(self._mood))
 
         # 7) 气泡淡入/保持/淡出
         age = now - self._bubble_t0
@@ -1096,7 +1117,8 @@ class PetWindow(QWidget):
                       self._glow)
             self._sprite.draw(p, self.pet_cx, self.pet_cy, self.body_w,
                               self.body_h, self._pose, frame=self._frame,
-                              motion=self._motion, facing=self._facing)
+                              motion=self._motion, facing=self._facing,
+                              anim=self._clip, t=time.monotonic())
             # 立绘管表情，星星 / 爱心 / 怒气 / Zzz 这类"浮在身体外面"的
             # 符号管气氛 —— 两边各管一半，缺一半就像个假人。
             draw_mood_fx(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,

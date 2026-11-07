@@ -96,6 +96,10 @@ class OrbitMenu(QWidget):
         self._side = "left"
         self._centers: List[Tuple[str, str, str, QPointF]] = []
         self._origin = QPointF()
+        # 弧半径。别用模块常量 R —— 换成 260×390 的动画素材之后，宠物的
+        # 显示宽度从 113 涨到 146，固定 92 的弧会让三个圆压到身体边上。
+        # 每次弹出按当前体宽重算（见 popup_near），窗口大小变了也跟着走。
+        self._r = R
         self._pill_w = PILL_MIN_W
         self._appear = 1.0            # 入场进度 0~1（1 = 完全展开）
         self._build("left")
@@ -121,6 +125,10 @@ class OrbitMenu(QWidget):
         """按方向算三个圆心，并把整个控件裁到刚好包住它们 + 名称那一列。"""
         self._side = side
 
+        # 弧半径跟着体宽走：留 26% 的余量，圆的半径 23，加起来刚好落在
+        # 身体轮廓外面一点（太贴会像贴在身上的贴纸，太远又够不着）。
+        self._r = max(R, getattr(self.win, "body_w", 0.0) * 0.74)
+
         # 名称胶囊的宽度按最长的名字量，而不是写死 —— 换成两个字以外的名字
         # （或用户系统字体偏宽）时不会把字挤掉。
         fm = QFontMetrics(self._font_name)
@@ -131,7 +139,8 @@ class OrbitMenu(QWidget):
         for (key, icon, name), deg in zip(_ITEMS, self._angles(side)):
             rad = math.radians(deg)
             raw.append((key, icon, name,
-                        QPointF(R * math.cos(rad), R * math.sin(rad))))
+                        QPointF(self._r * math.cos(rad),
+                                self._r * math.sin(rad))))
 
         pad = D / 2 + PAD
         minx = min(c.x() for _, _, _, c in raw) - pad
@@ -171,8 +180,12 @@ class OrbitMenu(QWidget):
             cx = int(pos.x() + anchor.pet_cx)
             cy = int(pos.y() + anchor.pet_cy)
 
+        # 先按当前体宽更新弧半径：下面的 reach 判断和 _build 都要用它，
+        # 晚更新一步就会"按旧半径判断放不放得下、按新半径去摆"，边上会露出去。
+        self._r = max(R, getattr(anchor, "body_w", 0.0) * 0.74)
+
         # 弧从宠物中心往一侧伸出去的距离（含圆的半径和名称列）
-        reach = R + D / 2 + PAD + self._pill_w + 8
+        reach = self._r + D / 2 + PAD + self._pill_w + 8
 
         side = "left"
         if area is not None and cx - reach < area.left():

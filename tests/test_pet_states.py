@@ -508,4 +508,61 @@ check("不认识的名字不瞎切", win3.control.set_single_preset("火星版")
 
 mapping.apply_bindings({})           # 收尾：把运行时表还原，别污染后面
 
+# ---------------------------------------------------------------- 动作动画
+# 5 套 GIF 转出来的循环动画。这里守四件事：
+#   1) 素材真的被认出来了（名字拼错 / meta 丢失时立刻发现）
+#   2) 帧序列取模不越界（t 传的是单调时钟，一直在涨）
+#   3) 情绪到动画的映射不会把"坐着"错配成"站着打瞌睡"
+#   4) 静态表情和动画帧是同一个画布 —— 不一致的话换表情时角色会突然缩放
+print("== 贴图动画：GIF 动作 -> 循环播放 ==")
+from pet.ui import anim as _anim
+from pet.ui.sprite import SpriteSet
+
+_cfg_a = Config()
+_cfg_a.sprite = "assets/girl/stand.png"
+_sp = SpriteSet.from_config(_cfg_a)
+check("加载到 5 套循环动画", _sp is not None and len(_sp.anim_names) == 5)
+check("动画名字齐了：" + "、".join(_sp.anim_names),
+      set(_sp.anim_names) == {"idle", "drag", "dance", "heart", "wave"})
+
+_c = _sp.clip("idle")
+check("待机那套是 36 帧", _c is not None and len(_c.frames) == 36)
+check("整套约 3 秒", abs(_c.total - 3.0) < 0.15)
+check("同一套不会重复读盘（拿到同一个对象）", _sp.clip("idle") is _c)
+check("查不到的动作返回 None", _sp.clip("不存在") is None)
+
+check("t=0 -> 第 0 帧", _c.index_at(0.0) == 0)
+check("t=总长 -> 回到第 0 帧", _c.index_at(_c.total) == 0)
+check("t 超过总长也不会越界",
+      _c.index_at(_c.total * 7 + 0.5) < len(_c.frames))
+check("负时间不会崩", 0 <= _c.index_at(-0.01) < len(_c.frames))
+
+check("待机 = 打瞌睡", _anim.anim_for_mood("idle") == "idle")
+check("开心 = 比心", _anim.anim_for_mood("happy") == "heart")
+check("挥手 = 挥手", _anim.anim_for_mood("wave") == "wave")
+check("跳舞有真动作了", _anim.anim_for_mood("dance") == "dance")
+check("坐着不播站立动画（否则坐在地上还点头）",
+      _anim.anim_for_mood("sit") == "")
+check("生气退回静态帧", _anim.anim_for_mood("angry") == "")
+
+_wa = PetWindow(EventBus(), _cfg_a)
+_wa.show()
+_wa._mood = "idle"
+_wa._tick()
+check("窗口待机时在播 idle", _wa._clip == "idle")
+_wa._dragging = True
+_wa._drag_moved = True
+_wa._tick()
+check("拖动时强制播「被拎起」", _wa._clip == "drag")
+_wa._dragging = False
+_wa._drag_moved = False
+_wa._mood = "sit"
+_wa._tick()
+check("坐下时不播动画，用静态坐姿", _wa._clip == "")
+
+_sizes = {pm.size() for pm in _sp.frames.values()}
+_sizes |= {pm.size() for pm in _c.frames}
+check("静态表情和动画帧是同一个画布（否则换表情会突然缩放）",
+      len(_sizes) == 1)
+
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

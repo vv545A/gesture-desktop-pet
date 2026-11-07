@@ -56,6 +56,37 @@ def frame_for_mood(mood: str) -> str:
     return MOOD_FRAME.get(mood, FALLBACK_FRAME)
 
 
+# ---------------------------------------------------------------- 情绪 → 循环动画
+# 5 套 GIF 转出来的动画（见 tools/import_pet_gifs.py）。有动画就播动画，
+# 没有的（生气、思考、坐着）退回静态帧 —— 硬套一个不贴切的动画比不动更假。
+MOOD_ANIM: Dict[str, str] = {
+    # 待机就是"站着打瞌睡"：手放下、闭眼、隔一会儿点一下头
+    "idle": "idle",
+    "listen": "idle",
+    "calm": "idle",
+    "sleepy": "idle",
+    # 开心 / 撒娇 -> 比心
+    "happy": "heart",
+    "proud": "heart",
+    "love": "heart",
+    "shy": "heart",
+    # 打招呼 / 被吓到 -> 挥手（举手正好是"欸？！"的样子）
+    "wave": "wave",
+    "surprised": "wave",
+    # 跳舞（原来靠 shake/hop 拼，现在有真动作了）
+    "dance": "dance",
+    # 坐着、生气、思考：静态帧更准，别硬套
+    "sit": "",
+    "angry": "",
+    "think": "",
+}
+
+
+def anim_for_mood(mood: str) -> str:
+    """情绪对应的循环动画名。空串 = 这套情绪没有动画，用静态帧。"""
+    return MOOD_ANIM.get(mood, "")
+
+
 # ---------------------------------------------------------------- 关键帧
 @dataclass(frozen=True)
 class Frame:

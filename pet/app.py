@@ -91,7 +91,7 @@ def _snapshot_actions(cfg: Config, path: str) -> int:
         return 1
 
     steps = (0.08, 0.30, 0.52, 0.74, 0.94)
-    label_w, cell_w, cell_h = 176, 134, 182
+    label_w, cell_w, cell_h = 176, 150, 220
     names = sorted(anim.CLIPS)
 
     pm = QPixmap(label_w + cell_w * len(steps), cell_h * len(names))
@@ -100,7 +100,7 @@ def _snapshot_actions(cfg: Config, path: str) -> int:
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-    body_h = 132.0
+    body_h = 172.0
     body_w = body_h * sp.aspect
 
     for row, name in enumerate(names):
@@ -172,7 +172,9 @@ def _snapshot(cfg: Config, path: str) -> int:
         cells = [("idle", 0, 0.0), ("listen", 0, 0.65), ("happy", 0, 0.0),
                  ("surprised", 0, 0.0), ("shy", 0, 0.0), ("sleepy", 0, 0.0)]
 
-    cell_w, cell_h = 210, 268
+    # 格子尺寸跟着素材构图走：角色只占画布 73%（挥手那套手臂最宽，撑大了
+    # 画布），body_h 得比"想要的角色高度"大一圈，不然整排看过去一片空白。
+    cell_w, cell_h = 210, 300
     pm = QPixmap(cell_w * len(cells), cell_h)
     pm.fill(QColor(244, 247, 249))
     p = QPainter(pm)
@@ -182,7 +184,7 @@ def _snapshot(cfg: Config, path: str) -> int:
         pose = PetPose.for_mood("listen" if name == "hover" else name)
         pose.aura = aura
         if sp is not None:
-            body_h = 158.0
+            body_h = 215.0
             body_w = body_h * sp.aspect
             draw_shadow(p, cx, cy, body_w, body_h)
             draw_glow(p, cx, cy, body_w, body_h, pose.glow)
