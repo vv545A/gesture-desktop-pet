@@ -168,6 +168,11 @@ class PetWindow(QWidget):
         self._motion = None                # 本帧采样到的动作变换
         self._frame = anim.frame_for_mood("idle")   # 当前画的立绘帧
         self._clip = anim.anim_for_mood("idle")     # 当前播的循环动画（""=不播）
+        self._clip_t0 = 0.0                 # 这套动画的起始时刻（换套时重置相位）
+        # 有没有"真"的舞蹈动画素材。有的话跳舞时就不再叠程序化摆动 ——
+        # 两套一起上会互相打架（见 _tick 4b）。只查 meta，不预读 36 张图。
+        self._dance_anim = bool(self._sprite is not None
+                                and self._sprite.has_clip("dance"))
         self._click_alt = False            # 点一下轮换：比心 / 挥手
         self._sit = False                  # 是不是坐在地上
         self._yawned = False               # 这一轮"困了"有没有打过哈欠
@@ -465,11 +470,18 @@ class PetWindow(QWidget):
                 self.cfg.follow = "cursor"
         elif key == "pet:dance":
             self._asleep = False
-            self._dance_until = now + 3.5
+            # 时长对齐舞蹈动画的**整数个循环**：36 帧 x 83.3ms = 3.0 秒。
+            # 给 3.5 秒的话，会在第二遍跳到半拍时被硬切回待机，看着像
+            # "跳到一半被人按了暂停"；3.0 秒正好收在第一帧该收的地方。
+            self._dance_until = now + 3.0
             # 立刻切表情，不等下一帧：_tick 里那条只是"续命"，防止
             # say() 的 1.6 秒超时把后两秒掐成"站着抖"
-            self._set_mood("dance", 3.5)
-            self._anim.play("hop", now)
+            self._set_mood("dance", 3.0)
+            # 有舞蹈动画就**别再叠 hop**：hop 是 0.58 秒的挤压+起跳，
+            # 叠在动画第一拍上就是开场先抖一下；动画自己就有起势。
+            # 没动画（矢量版）才需要这一下，否则只是"摆个造型站着"。
+            if not self._dance_anim:
+                self._anim.play("hop", now)
 
     def _on_continuous(self, ev: Event) -> None:
         assert isinstance(ev, ContinuousAction)
@@ -1032,14 +1044,32 @@ class PetWindow(QWidget):
         if self._facing and self.cfg.sprite_walk:
             target.tilt += self._facing * 4.0
 
-        # 4b) 跳舞：在时间轴上叠一层高频摆动。
-        #     姿态表只给"基调"——静态的 dance 姿态看着只是"摆了个造型"，
-        #     必须有相位变化才叫跳舞。最后 0.6 秒幅度收敛，避免戛然而止。
-        if now < self._dance_until:
+        # 4b) 跳舞。分两种素材走**两条完全不同的路**：
+        #
+        #     有舞蹈动画（美术画的 36 帧）：只播动画，程序化摆动全部关掉。
+        #         动画里身体的起伏、左右摆、重心转移、抬脚都是画在帧上的，
+        #         再叠 ±8° / 1.4Hz 的倾斜和 0.06 的弹跳，就是两套节奏互相
+        #         打架：帧是 12fps，正弦是 60fps，屏幕上看到的不是"跳得更欢"，
+        #         而是整个人在发颤。加了动画之后这一段就成了纯噪音。
+        #
+        #     没有舞蹈动画（矢量版、老素材）：才退回程序化摆动撑场面。
+        #         静态的 dance 姿态只是"摆了个造型"，必须有相位变化才叫跳舞。
+        #
+        # 两种都要在最后 0.6 秒收敛 —— 动画那条靠 _dance_until 到点直接换回
+        # 待机（帧本身首尾接得上），所以这里只需要管程序化那条。
+        if now < self._dance_until and not self._dance_anim:
             amp = min(1.0, (self._dance_until - now) / 0.6)
             target.tilt += 8.0 * amp * math.sin(now * 9.0)
             target.bob += 0.06 * amp * abs(math.sin(now * 5.2))
             target.squash += 0.07 * amp * math.sin(now * 6.4)
+
+        # 4b2) 跳舞（有动画时）：把上面 4) 的呼吸和朝向倾斜也一起压平。
+        #      这 0.012 的 bob 单独看是"呼吸"，叠在舞蹈帧上就变成了角色在
+        #      以 1.7Hz 上下轻微抽搐 —— 幅度不大但频率不对，眼睛很敏感。
+        if now < self._dance_until and self._dance_anim:
+            target.tilt = 0.0
+            target.bob = 0.0
+            target.squash = 0.0
 
         # 4c) 被摸：尾摆加快。比"说句话"更让人上瘾的是"它真的在动"，
         #     所以撸宠的反馈主要落在尾巴上，台词只做点缀。
@@ -1075,8 +1105,13 @@ class PetWindow(QWidget):
                        and self._motion.frame else anim.frame_for_mood(self._mood))
         # 动画优先于静态帧：美术画的整套动作，比"换张表情图 + 整体缩放"更像活的。
         # 拖动时强制"被拎起"——那套里脚是离地的，比任何表情都更能说明状态。
-        self._clip = ("drag" if (self._dragging and self._drag_moved)
-                      else anim.anim_for_mood(self._mood))
+        clip = ("drag" if (self._dragging and self._drag_moved)
+                else anim.anim_for_mood(self._mood))
+        if clip != self._clip:
+            # 换一套动画就从它的第 0 帧起播。不重置相位的话，切进舞蹈会落在
+            # 任意一拍（比如一只脚正好抬在半空），看着像"闪了一下"。
+            self._clip = clip
+            self._clip_t0 = now
 
         # 7) 气泡淡入/保持/淡出
         age = now - self._bubble_t0
@@ -1118,7 +1153,8 @@ class PetWindow(QWidget):
             self._sprite.draw(p, self.pet_cx, self.pet_cy, self.body_w,
                               self.body_h, self._pose, frame=self._frame,
                               motion=self._motion, facing=self._facing,
-                              anim=self._clip, t=time.monotonic())
+                              anim=self._clip,
+                              t=max(0.0, time.monotonic() - self._clip_t0))
             # 立绘管表情，星星 / 爱心 / 怒气 / Zzz 这类"浮在身体外面"的
             # 符号管气氛 —— 两边各管一半，缺一半就像个假人。
             draw_mood_fx(p, self.pet_cx, self.pet_cy, self.body_w, self.body_h,

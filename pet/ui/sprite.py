@@ -115,6 +115,19 @@ class SpriteSet:
     def anim_names(self) -> Tuple[str, ...]:
         return tuple(self._anim_meta)
 
+    def has_clip(self, name: str) -> bool:
+        """
+        这套动画**存不存在**（只看 meta 和目录，不读盘）。
+
+        和 clip() 分开是因为调用方的意图不同：
+            "我要播它" -> clip()，会加载 36 张图
+            "我要不要叠程序化动作" -> has_clip()，只问一句，零成本
+        后者在 _tick 里每次判 dance 都会问一次，不能有 IO。
+        """
+        if not name or name not in self._anim_meta:
+            return False
+        return os.path.isdir(os.path.join(self._anim_dir, name))
+
     def clip(self, name: str) -> Optional[AnimClip]:
         """
         取一套动画（首次调用才读盘）。没有就返回 None，调用方退回静态帧。

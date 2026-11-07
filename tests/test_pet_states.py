@@ -564,6 +564,74 @@ _wa._mood = "sit"
 _wa._tick()
 check("坐下时不播动画，用静态坐姿", _wa._clip == "")
 
+# 跳舞不能"抖"：有舞蹈动画素材时，姿态层必须**彻底让路**。
+# 舞蹈帧里身体的起伏、左右摆、抬脚都是画好的，再叠 ±8°/1.4Hz 的倾斜
+# 和 0.06 的弹跳，就是两套节奏打架（12fps 的帧 vs 60fps 的正弦），
+# 屏幕上看到的不是"跳得更欢"，而是整个人在发颤 —— 用户点名报过这个。
+#
+# 这段必须用**假时钟**：整个过程不到 1 毫秒就跑完了，真实时钟走不动，
+# sin(now*9) 的相位几乎不变，测出来的"摆幅"是假的。
+check("认出了舞蹈动画素材（决定要不要叠程序化摆动）", _wa._dance_anim is True)
+
+_wmod = sys.modules["pet.ui.window"]
+_real_clock = _wmod.time.monotonic
+_clock = [_real_clock()]
+_wmod.time.monotonic = lambda: _clock[0]        # 只影响被测窗口取时
+
+
+def _drive_dance(anim_on: bool, frames: int = 45) -> list:
+    """以 60fps 假时钟推进，返回每帧的 |tilt| 序列。"""
+    _wa._dance_anim = anim_on
+    _wa._mood = "dance"
+    _wa._mood_until = _clock[0] + 2.0
+    _wa._dance_until = _clock[0] + 2.0
+    _wa._clip_t0 = _clock[0]
+    _wa._last_tick = _clock[0]
+    _wa._pose.tilt = 0.0
+    _wa._pose.bob = 0.0
+    _wa._pose.squash = 0.0
+    out = []
+    for _ in range(frames):
+        _clock[0] += 1 / 60
+        _wa._tick()
+        out.append((abs(_wa._pose.tilt), abs(_wa._pose.bob), _wa._clip))
+    return out
+
+
+try:
+    # 换套动画要**重置相位**：不重置的话 t 还是从很久以前算起的，
+    # 切进舞蹈会落在任意一拍（比如一只脚正好抬在半空），像闪了一下。
+    _wa._clip = ""                 # 模拟"之前没在播任何动画"
+    _wa._clip_t0 = 0.0             # 模拟很早以前的时间基准
+    _wa._mood = "dance"
+    _wa._mood_until = _clock[0] + 2.0
+    _wa._dance_until = _clock[0] + 2.0
+    _clock[0] += 1 / 60
+    _wa._last_tick = _clock[0]
+    _wa._tick()
+    check("换套动画会重置相位（不会停在半拍上）",
+          _wa._clip == "dance" and abs(_clock[0] - _wa._clip_t0) < 1e-6)
+
+    _with_anim = _drive_dance(True)
+    check("跳舞期间不叠倾斜（交给动画，不叠正弦）",
+          max(t for t, _, _ in _with_anim) < 0.5)
+    check("跳舞期间不叠上下浮动",
+          max(b for _, b, _ in _with_anim) < 0.02)
+    check("跳舞期间确实在播舞蹈动画",
+          all(c == "dance" for _, _, c in _with_anim))
+
+    # 反过来：没有动画素材（矢量版 / 老素材）时，必须还留着程序化摆动，
+    # 否则"跳舞"就退化成站着摆造型。这条守住兜底路径不被人一起删掉。
+    _no_anim = _drive_dance(False)
+    check("没有舞蹈素材时仍有摆动（兜底没被误删）",
+          max(t for t, _, _ in _no_anim) > 2.0)
+finally:
+    _wmod.time.monotonic = _real_clock
+
+_wa._dance_until = 0.0
+_wa._dance_anim = True
+_wa._mood = "idle"
+
 # 打瞌睡的时机：10 秒没互动才困。这条用户点名要求过，别让它悄悄变回
 # "一开机就闭眼"。quiet 从 max(最后一次看到手, 最后一次互动) 起算。
 _wa._asleep = False
