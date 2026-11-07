@@ -537,7 +537,11 @@ check("t 超过总长也不会越界",
       _c.index_at(_c.total * 7 + 0.5) < len(_c.frames))
 check("负时间不会崩", 0 <= _c.index_at(-0.01) < len(_c.frames))
 
-check("待机 = 打瞌睡", _anim.anim_for_mood("idle") == "idle")
+check("默认待机**不**播打瞌睡（用原本那张静态站立图）",
+      _anim.anim_for_mood("idle") == "")
+check("听声音 / 安静陪伴也不播（同理，它们都是\"在场没做事\"）",
+      _anim.anim_for_mood("listen") == "" and _anim.anim_for_mood("calm") == "")
+check("真的困了才播打瞌睡", _anim.anim_for_mood("sleepy") == "idle")
 check("开心 = 比心", _anim.anim_for_mood("happy") == "heart")
 check("挥手 = 挥手", _anim.anim_for_mood("wave") == "wave")
 check("跳舞有真动作了", _anim.anim_for_mood("dance") == "dance")
@@ -549,7 +553,7 @@ _wa = PetWindow(EventBus(), _cfg_a)
 _wa.show()
 _wa._mood = "idle"
 _wa._tick()
-check("窗口待机时在播 idle", _wa._clip == "idle")
+check("窗口待机时是静态站立帧，不播动画", _wa._clip == "" and _wa._frame == "stand")
 _wa._dragging = True
 _wa._drag_moved = True
 _wa._tick()
@@ -560,9 +564,54 @@ _wa._mood = "sit"
 _wa._tick()
 check("坐下时不播动画，用静态坐姿", _wa._clip == "")
 
+# 打瞌睡的时机：10 秒没互动才困。这条用户点名要求过，别让它悄悄变回
+# "一开机就闭眼"。quiet 从 max(最后一次看到手, 最后一次互动) 起算。
+_wa._asleep = False
+_wa._napping = False
+_wa._game_on = False
+_wa._sit = False
+_wa._yawned = False
+_wa._anim.stop()
+_wa._mood = "idle"
+_wa._last_hand = time.monotonic() - 3.0
+_wa._last_react = _wa._last_hand
+_wa._tick()
+check("3 秒没动作：还是正常的站立待机", _wa._mood == "idle")
+
+_wa._last_hand = time.monotonic() - 12.0
+_wa._last_react = _wa._last_hand
+_wa._tick()
+check("10 秒没动作：切到困，开始播打瞌睡",
+      _wa._mood == "sleepy" and _wa._clip == "idle")
+
 _sizes = {pm.size() for pm in _sp.frames.values()}
 _sizes |= {pm.size() for pm in _c.frames}
 check("静态表情和动画帧是同一个画布（否则换表情会突然缩放）",
       len(_sizes) == 1)
+
+# 五套素材是五次独立生成的，角色在原图里画得不一样大（437px ~ 553px，差 26%）。
+# 转换脚本必须**各自**归一化；一旦退回"共用一个系数"，切成比心就会突然大一圈。
+# 这里用第 0 帧量角色身高，极差守在 6% 以内（同一角色，允许姿势带来的少量差异）。
+import numpy as np                                   # noqa: E402
+from PySide6.QtGui import QImage                     # noqa: E402
+
+
+def _body_h(pm) -> int:
+    img = pm.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    w, h, stride = img.width(), img.height(), img.bytesPerLine()
+    a = np.frombuffer(img.constBits(), dtype=np.uint8)
+    a = a.reshape(h, stride // 4, 4)[:, :w, 3]
+    ys = np.nonzero((a > 8).any(axis=1))[0]
+    return int(ys.max() - ys.min() + 1)
+
+
+_hs = {n: _body_h(_sp.clip(n).frames[0]) for n in _sp.anim_names}
+_hs["stand"] = _body_h(_sp.frames["stand"])
+_lo, _hi = min(_hs.values()), max(_hs.values())
+check("五套动画 + 静态图的角色一样高："
+      + " ".join(f"{k}={v}" for k, v in sorted(_hs.items())),
+      _hi - _lo <= _lo * 0.06)
+print(f"      （最高 {_hi}px、最矮 {_lo}px，极差 {_hi - _lo}px）")
+
 
 print(f"\n[RESULT] {len(PASS)} 项全部通过")

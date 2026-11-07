@@ -157,6 +157,7 @@ def _snapshot(cfg: Config, path: str) -> int:
 
     from .ui.paint import PetPose, draw_aura, draw_glow, draw_shadow, draw_pet, ui_font
     from .ui.sprite import SpriteSet
+    from .ui import theme
 
     app = QApplication.instance() or QApplication([])   # noqa: F841  (Qt 需要)
     sp = SpriteSet.from_config(cfg)
@@ -172,11 +173,11 @@ def _snapshot(cfg: Config, path: str) -> int:
         cells = [("idle", 0, 0.0), ("listen", 0, 0.65), ("happy", 0, 0.0),
                  ("surprised", 0, 0.0), ("shy", 0, 0.0), ("sleepy", 0, 0.0)]
 
-    # 格子尺寸跟着素材构图走：角色只占画布 73%（挥手那套手臂最宽，撑大了
+    # 格子尺寸跟着素材构图走：角色占画布 75%（挥手那套手臂最宽，撑大了
     # 画布），body_h 得比"想要的角色高度"大一圈，不然整排看过去一片空白。
     cell_w, cell_h = 210, 300
     pm = QPixmap(cell_w * len(cells), cell_h)
-    pm.fill(QColor(244, 247, 249))
+    pm.fill(QColor(theme.CREAM))
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     for i, (name, facing, aura) in enumerate(cells):
@@ -190,10 +191,10 @@ def _snapshot(cfg: Config, path: str) -> int:
             draw_glow(p, cx, cy, body_w, body_h, pose.glow)
             sp.draw(p, cx, cy, body_w, body_h, pose,
                     frame="" if name == "hover" else name, facing=facing)
-            draw_aura(p, cx, cy, body_w, body_h, aura)
+            draw_aura(p, cx, cy, body_w, body_h, aura, theme.PINK_DEEP)
         else:
             draw_pet(p, cx, cy, 118, 158, pose)
-        p.setPen(QColor(90, 110, 120))
+        p.setPen(QColor(theme.INK_DIM))
         p.setFont(ui_font(9))
         if sp is None:
             label = name
